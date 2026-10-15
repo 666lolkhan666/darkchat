@@ -1,0 +1,61 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner() {
+      return request.auth != null
+        && request.auth.uid == '5Uc5gT6JclWsAE6fLouHV8TRsVe2';
+    }
+
+    function validMessage() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['name', 'text', 'createdAt', 'threadId', 'sender'])
+        && data.keys().hasOnly([
+          'name', 'text', 'createdAt', 'threadId', 'sender', 'attachment'
+        ])
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 100
+        && data.text is string
+        && data.text.size() > 0
+        && data.text.size() <= 2000
+        && data.createdAt == request.time
+        && data.threadId is string
+        && (
+          (
+            data.sender == 'user'
+            && request.auth != null
+            && request.auth.uid != '5Uc5gT6JclWsAE6fLouHV8TRsVe2'
+            && data.threadId == request.auth.uid
+          )
+          || (data.sender == 'owner' && isOwner())
+        )
+        && (
+          !('attachment' in data)
+          || (
+            data.attachment is map
+            && data.attachment.keys().hasOnly(['name', 'type', 'size', 'path'])
+            && data.attachment.name is string
+            && data.attachment.name.size() > 0
+            && data.attachment.name.size() <= 255
+            && data.attachment.type is string
+            && data.attachment.type.size() <= 255
+            && data.attachment.size is int
+            && data.attachment.size > 0
+            && data.attachment.size <= 268435456
+            && data.attachment.path is string
+            && data.attachment.path.matches(
+              '^attachments/' + data.threadId + '/[A-Za-z0-9-]+$'
+            )
+          )
+        );
+    }
+
+    match /messages/{messageId} {
+      allow read: if isOwner()
+        || (request.auth != null && resource.data.threadId == request.auth.uid);
+      allow create: if validMessage();
+      allow update, delete: if false;
+    }
+  }
+}
