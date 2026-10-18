@@ -31,4 +31,4 @@ The Firestore rules are a starter template. Review and publish them for your dep
 npm run build
 ```
 
-The included GitHub Actions workflow builds and deploys `dist/` on pushes to `main`. In GitHub repository settings, enable Pages with **GitHub Actions** as the build and deployment source. This app uses `owner.html` as its static-compatible owner route, so GitHub Pages does not need SPA rewrite configuration. The relative asset base in `vite.config.js` supports both root and repository-subpath hosting.
+The included GitHub Actions workflow runs `npm ci` and `npm run build`, then deploys the generated `dist/` directory on pushes to `main`. In GitHub repository settings, enable Pages with **GitHub Actions** as the build and deployment source. This app uses `owner.html` as its static-compatible owner route, so GitHub Pages does not need SPA rewrite configuration. The relative asset base in `vite.config.js` supports both root and repository-subpath hosting.
