@@ -1,6 +1,5 @@
 import "./style.css";
 import {
-  attachmentsEnabled,
   isFirebaseConfigured,
   isOwnerConfigured,
   ownerUid
@@ -12,12 +11,14 @@ import {
   watchAuthSession
 } from "./services/auth.js";
 import {
-  getAttachmentUrl,
-  sendAttachments,
   sendMessage,
   sendReply,
   watchMessages
 } from "./services/messages.js";
+import {
+  MAX_MESSAGE_LENGTH,
+  MAX_NAME_LENGTH
+} from "./services/message-validation.js";
 
 const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
@@ -36,9 +37,6 @@ let replyError = "";
 let lastAuthUid = "";
 let visitorTranscript = null;
 let visitorErrorLine = null;
-let pageDisposed = false;
-let attachmentGeneration = 0;
-const attachmentUrls = new Map();
 
 function readSavedName() {
   try {
@@ -63,16 +61,6 @@ function clearSavedName() {
   } catch (error) {
     console.warn("Could not clear the saved visitor name.", error);
   }
-}
-
-function releaseAttachmentUrls() {
-  attachmentGeneration += 1;
-  for (const urlPromise of attachmentUrls.values()) {
-    urlPromise
-      .then((url) => URL.revokeObjectURL(url))
-      .catch((error) => console.warn("Could not release an attachment preview URL.", error));
-  }
-  attachmentUrls.clear();
 }
 
 function stopMessageWatch() {
@@ -158,7 +146,7 @@ function showNamePrompt(errorText = "") {
   app.replaceChildren();
   app.className = "terminal";
   const { row, input } = makeInput("whats your name ?");
-  input.maxLength = 100;
+  input.maxLength = MAX_NAME_LENGTH;
   app.append(row);
   if (errorText) app.append(makeLine(errorText, "error"));
   focusForDesktop(input);
@@ -195,17 +183,11 @@ function showMessagePrompt(name) {
     const entry = document.createElement("div");
     entry.className = "message-entry";
     const { row, input } = makeInput("", "", "text");
-    input.maxLength = 2000;
+    input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Message");
     const status = makeLine();
     status.setAttribute("role", "status");
     entry.append(row, status);
-    if (attachmentsEnabled) {
-      addAttachmentControl(entry, name, visitorUid, "user", (text, isError = false) => {
-        status.className = isError ? "line error" : "line status";
-        status.textContent = text;
-      });
-    }
     app.append(entry);
     focusForDesktop(input);
     row.addEventListener("click", () => input.focus());
@@ -254,11 +236,7 @@ function createChatMessage(message, perspective, threadName = "") {
 
   const content = document.createElement("div");
   content.className = "chat-content";
-  if (message.attachment) {
-    appendAttachment(content, message.attachment, perspective === "owner", !isOwner && perspective !== "owner");
-  } else {
-    content.textContent = message.text || "";
-  }
+  content.textContent = message.text || "";
 
   article.append(sender, content);
   return article;
@@ -270,205 +248,6 @@ function renderVisitorTranscript() {
   for (const message of visitorMessages) {
     visitorTranscript.append(createChatMessage(message, "user"));
   }
-}
-
-function addAttachmentControl(container, name, threadId, sender, reportStatus) {
-  const controls = document.createElement("div");
-  controls.className = "composer-controls";
-  const picker = document.createElement("input");
-  picker.type = "file";
-  picker.multiple = true;
-  picker.hidden = true;
-  picker.tabIndex = -1;
-  picker.setAttribute("aria-label", "Choose files");
-
-  const attach = document.createElement("button");
-  attach.type = "button";
-  attach.className = "text-control attach-control";
-  attach.textContent = "Attach";
-  let holdTimer;
-  let suppressAttachClick = false;
-  attach.addEventListener("click", () => {
-    if (suppressAttachClick) {
-      suppressAttachClick = false;
-      return;
-    }
-    picker.click();
-  });
-  attach.addEventListener("pointerdown", (event) => {
-    if (event.pointerType === "touch") {
-      holdTimer = window.setTimeout(() => {
-        suppressAttachClick = true;
-      }, 550);
-    }
-  });
-  attach.addEventListener("pointerup", () => {
-    window.clearTimeout(holdTimer);
-    if (suppressAttachClick) picker.click();
-  });
-  for (const eventName of ["pointerleave", "pointercancel"]) {
-    attach.addEventListener(eventName, () => {
-      window.clearTimeout(holdTimer);
-      suppressAttachClick = false;
-    });
-  }
-  attach.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    picker.click();
-  });
-
-  const upload = async (files) => {
-    if (!files.length) return;
-    attach.disabled = true;
-    try {
-      await sendAttachments(name, files, threadId, sender, ({ file, index, count, transferred, total }) => {
-        const percent = total ? Math.floor((transferred / total) * 100) : 0;
-        reportStatus(`Uploading ${index + 1}/${count}: ${file.name} (${percent}%)`);
-      });
-      reportStatus("");
-    } catch (error) {
-      reportStatus(error.message || "File upload failed.", true);
-    } finally {
-      attach.disabled = false;
-      picker.value = "";
-    }
-  };
-
-  picker.addEventListener("change", () => upload([...picker.files]));
-  container.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    controls.classList.add("dragover");
-  });
-  container.addEventListener("dragleave", (event) => {
-    if (!container.contains(event.relatedTarget)) controls.classList.remove("dragover");
-  });
-  container.addEventListener("drop", (event) => {
-    event.preventDefault();
-    controls.classList.remove("dragover");
-    upload([...event.dataTransfer.files]);
-  });
-  controls.addEventListener("contextmenu", (event) => {
-    if (event.target === controls) {
-      event.preventDefault();
-      picker.click();
-    }
-  });
-  controls.append(attach, picker);
-  container.append(controls);
-}
-
-function appendAttachment(line, attachment, canSave, sent = false) {
-  const generation = attachmentGeneration;
-  const contentType = attachment.type || "application/octet-stream";
-  const name = attachment.name || "Attachment";
-  const details = document.createElement("span");
-  details.className = "attachment-name";
-  details.textContent = name;
-  line.append(details);
-  if (sent) {
-    const tick = document.createElement("span");
-    tick.className = "delivery-check";
-    tick.textContent = " ✓";
-    tick.setAttribute("aria-label", "Sent");
-    line.append(tick);
-  }
-
-  let urlPromise = attachmentUrls.get(attachment.path);
-  if (!urlPromise) {
-    urlPromise = getAttachmentUrl(attachment.path);
-    attachmentUrls.set(attachment.path, urlPromise);
-    urlPromise.catch(() => attachmentUrls.delete(attachment.path));
-  }
-
-  const tools = document.createElement("span");
-  tools.className = "attachment-tools";
-  line.append(tools);
-  urlPromise.then((url) => {
-    if (pageDisposed || generation !== attachmentGeneration) {
-      URL.revokeObjectURL(url);
-      return;
-    }
-    const save = document.createElement("a");
-    save.className = "text-control attachment-save";
-    save.href = url;
-    save.textContent = canSave ? "Save" : "Open";
-    save.target = "_blank";
-    save.rel = "noopener";
-    if (canSave) {
-      save.addEventListener("click", async (event) => {
-        event.preventDefault();
-        save.textContent = "Saving...";
-        try {
-          const response = await fetch(url);
-          if (!response.ok) throw new Error(`Download failed (${response.status}).`);
-          const blobUrl = URL.createObjectURL(await response.blob());
-          const download = document.createElement("a");
-          download.href = blobUrl;
-          download.download = name;
-          download.click();
-          window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
-          save.textContent = "Save";
-        } catch (error) {
-          save.textContent = error.message || "Save failed.";
-          save.classList.add("error");
-        }
-      });
-    }
-    tools.append(save);
-    if (canSave) {
-      const open = document.createElement("a");
-      open.className = "text-control attachment-save";
-      open.href = url;
-      open.textContent = "Open";
-      open.target = "_blank";
-      open.rel = "noopener";
-      tools.append(open);
-    }
-
-    if (contentType.startsWith("image/")) {
-      const image = document.createElement("img");
-      image.className = "attachment-preview";
-      image.src = url;
-      image.alt = name;
-      image.loading = "lazy";
-      image.addEventListener("click", () => image.requestFullscreen?.());
-      line.append(image);
-      const fullscreen = document.createElement("button");
-      fullscreen.type = "button";
-      fullscreen.className = "text-control attachment-save";
-      fullscreen.textContent = "Full screen";
-      fullscreen.addEventListener("click", () => image.requestFullscreen?.());
-      tools.append(fullscreen);
-    } else if (contentType.startsWith("video/")) {
-      const video = document.createElement("video");
-      video.className = "attachment-preview";
-      video.src = url;
-      video.controls = true;
-      video.preload = "metadata";
-      video.setAttribute("aria-label", name);
-      video.addEventListener("dblclick", () => video.requestFullscreen?.());
-      line.append(video);
-      const fullscreen = document.createElement("button");
-      fullscreen.type = "button";
-      fullscreen.className = "text-control attachment-save";
-      fullscreen.textContent = "Full screen";
-      fullscreen.addEventListener("click", () => video.requestFullscreen?.());
-      tools.append(fullscreen);
-    } else if (contentType.startsWith("audio/")) {
-      const audio = document.createElement("audio");
-      audio.className = "attachment-audio";
-      audio.src = url;
-      audio.controls = true;
-      audio.preload = "metadata";
-      audio.setAttribute("aria-label", name);
-      line.append(audio);
-    }
-  }).catch((error) => {
-    const failure = document.createElement("span");
-    failure.className = "error";
-    failure.textContent = ` ${error.message || "Attachment preview unavailable."}`;
-    tools.append(failure);
-  });
 }
 
 function showOwnerPasswordPrompt() {
@@ -591,7 +370,7 @@ function showOwnerInterface() {
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";
     const { row, input } = makeInput("", "", "text");
-    input.maxLength = 2000;
+    input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
     const status = makeLine(replyError, replyError ? "error" : "");
     status.setAttribute("role", "status");
@@ -615,12 +394,6 @@ function showOwnerInterface() {
       }
     });
     reply.append(row, status);
-    if (attachmentsEnabled) {
-      addAttachmentControl(reply, thread.name, thread.id, "owner", (text, isError = false) => {
-        status.className = isError ? "line error" : "line status";
-        status.textContent = text;
-      });
-    }
     main.append(reply);
   } else {
     main.append(makeLine("Select a user."));
@@ -680,7 +453,6 @@ async function handleAuthChange(user) {
   visitorMessages = [];
   visitorErrorLine = null;
   stopMessageWatch();
-  releaseAttachmentUrls();
 
   if (user?.uid === ownerUid) {
     startMessageListener(true);
@@ -711,10 +483,8 @@ async function boot() {
 
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) return;
-  pageDisposed = true;
   stopMessageWatch();
   stopSessionWatch?.();
-  releaseAttachmentUrls();
 });
 
 boot();

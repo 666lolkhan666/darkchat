@@ -10,9 +10,7 @@ service cloud.firestore {
     function validMessage() {
       let data = request.resource.data;
       return data.keys().hasAll(['name', 'text', 'createdAt', 'threadId', 'sender'])
-        && data.keys().hasOnly([
-          'name', 'text', 'createdAt', 'threadId', 'sender', 'attachment'
-        ])
+        && data.keys().hasOnly(['name', 'text', 'createdAt', 'threadId', 'sender'])
         && data.name is string
         && data.name.size() > 0
         && data.name.size() <= 100
@@ -31,25 +29,6 @@ service cloud.firestore {
             && data.threadId == request.auth.uid
           )
           || (data.sender == 'owner' && isOwner())
-        )
-        && (
-          !('attachment' in data)
-          || (
-            data.attachment is map
-            && data.attachment.keys().hasOnly(['name', 'type', 'size', 'path'])
-            && data.attachment.name is string
-            && data.attachment.name.size() > 0
-            && data.attachment.name.size() <= 255
-            && data.attachment.type is string
-            && data.attachment.type.size() <= 255
-            && data.attachment.size is int
-            && data.attachment.size > 0
-            && data.attachment.size <= 268435456
-            && data.attachment.path is string
-            && data.attachment.path.matches(
-              '^attachments/' + data.threadId + '/[A-Za-z0-9-]+$'
-            )
-          )
         );
     }
 

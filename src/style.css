@@ -123,11 +123,6 @@ input {
   color: #999;
 }
 
-.delivery-check {
-  color: #999;
-  font-size: 0.9em;
-}
-
 .visitor-transcript {
   width: min(100%, 720px);
   margin-top: 18px;
@@ -162,59 +157,6 @@ input {
 
 .owner-reply-composer {
   margin-top: 22px;
-}
-
-.composer-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 28px;
-  margin-top: 5px;
-  color: #888;
-  touch-action: manipulation;
-}
-
-.composer-controls.dragover {
-  color: #eee;
-}
-
-.attach-control {
-  color: #888;
-}
-
-.attachment-name {
-  overflow-wrap: anywhere;
-}
-
-.attachment-tools {
-  display: inline-flex;
-  gap: 12px;
-  margin-left: 10px;
-}
-
-.attachment-save {
-  color: #888;
-  text-decoration: none;
-}
-
-.attachment-preview {
-  display: block;
-  width: min(240px, 70vw);
-  max-height: 170px;
-  margin-top: 8px;
-  object-fit: contain;
-  object-position: left center;
-}
-
-.attachment-preview[alt] {
-  cursor: zoom-in;
-}
-
-.attachment-audio {
-  display: block;
-  width: min(320px, 75vw);
-  height: 38px;
-  margin-top: 8px;
 }
 
 .error {
