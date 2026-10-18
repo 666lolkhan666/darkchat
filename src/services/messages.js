@@ -7,14 +7,16 @@ import {
   serverTimestamp,
   where
 } from "firebase/firestore";
-import { auth, database } from "../firebase/client.js";
+import { database, storage } from "../firebase/client.js";
 import {
-  attachmentsEnabled,
-  fileApiUrl,
-  isFirebaseConfigured
-} from "../firebase/config.js";
+  deleteObject,
+  getDownloadURL,
+  ref,
+  uploadBytesResumable
+} from "firebase/storage";
+import { attachmentsEnabled, isFirebaseConfigured } from "../firebase/config.js";
 
-export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 256 * 1024 * 1024;
 
 const messagesCollection = () => {
   if (!isFirebaseConfigured() || !database) {
@@ -45,39 +47,33 @@ export async function sendMessage(name, text, threadId) {
 
 async function sendAttachment(name, file, threadId, sender, onProgress) {
   if (!attachmentsEnabled) {
-    throw new Error("File sharing is not set up yet. Configure the Cloudflare Worker URL first.");
+    throw new Error("File attachments are temporarily disabled.");
   }
-  if (!isFirebaseConfigured() || !database || !auth?.currentUser) {
-    throw new Error("File sharing is unavailable until Firebase authentication is ready.");
+  if (!isFirebaseConfigured() || !database || !storage) {
+    throw new Error("File sharing is unavailable until Firebase is configured.");
   }
   if (!threadId) throw new Error("Conversation session is not ready.");
   if (!(file instanceof File) || file.size === 0) {
     throw new Error(`${file?.name || "File"} is empty or unavailable.`);
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`${file.name} is larger than the 50 MB per-file limit.`);
+    throw new Error(`${file.name} is larger than the 256 MB per-file limit.`);
   }
 
   const id = crypto.randomUUID();
   const storagePath = `attachments/${threadId}/${id}`;
-  const token = await auth.currentUser.getIdToken();
-  const uploadUrl = `${fileApiUrl.replace(/\/+$/, "")}/${storagePath}`;
+  const fileRef = ref(storage, storagePath);
+  const task = uploadBytesResumable(fileRef, file, {
+    contentType: file.type || "application/octet-stream"
+  });
 
   await new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("PUT", uploadUrl);
-    request.setRequestHeader("Authorization", `Bearer ${token}`);
-    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    request.upload.addEventListener("progress", (event) => {
-      onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
-    });
-    request.addEventListener("load", () => {
-      if (request.status >= 200 && request.status < 300) resolve();
-      else reject(new Error(request.responseText || `Upload failed (${request.status}).`));
-    });
-    request.addEventListener("error", () => reject(new Error("Upload failed. Check your connection and try again.")));
-    request.addEventListener("abort", () => reject(new Error("Upload was cancelled.")));
-    request.send(file);
+    task.on(
+      "state_changed",
+      (snapshot) => onProgress?.(snapshot.bytesTransferred, snapshot.totalBytes),
+      reject,
+      resolve
+    );
   });
 
   try {
@@ -96,11 +92,7 @@ async function sendAttachment(name, file, threadId, sender, onProgress) {
     });
   } catch (error) {
     try {
-      const response = await fetch(uploadUrl, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!response.ok) throw new Error(`Cleanup failed (${response.status}).`);
+      await deleteObject(fileRef);
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -136,17 +128,10 @@ export async function sendReply(name, text, threadId) {
 }
 
 export async function getAttachmentUrl(storagePath) {
-  if (!attachmentsEnabled || !isFirebaseConfigured() || !auth?.currentUser) {
-    throw new Error("File storage is not configured or you are signed out.");
+  if (!attachmentsEnabled || !storage || !isFirebaseConfigured()) {
+    throw new Error("File storage is not configured.");
   }
-  const token = await auth.currentUser.getIdToken();
-  const response = await fetch(`${fileApiUrl.replace(/\/+$/, "")}/${storagePath}`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!response.ok) {
-    throw new Error((await response.text()) || `Download failed (${response.status}).`);
-  }
-  return URL.createObjectURL(await response.blob());
+  return getDownloadURL(ref(storage, storagePath));
 }
 
 export function watchMessages(onMessages, onError, threadId = null) {

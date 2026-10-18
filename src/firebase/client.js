@@ -1,7 +1,8 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { firebaseConfig, isFirebaseConfigured } from "./config.js";
+import { getStorage } from "firebase/storage";
+import { attachmentsEnabled, firebaseConfig, isFirebaseConfigured } from "./config.js";
 
 const app = isFirebaseConfigured()
   ? getApps().length
@@ -11,3 +12,4 @@ const app = isFirebaseConfigured()
 
 export const auth = app ? getAuth(app) : null;
 export const database = app ? getFirestore(app) : null;
+export const storage = app && attachmentsEnabled ? getStorage(app) : null;

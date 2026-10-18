@@ -11,8 +11,7 @@ export const firebaseConfig = {
 
 export const ownerEmail = "ooismailforajioo@gmail.com";
 export const ownerUid = "5Uc5gT6JclWsAE6fLouHV8TRsVe2";
-export const fileApiUrl = "";
-export const attachmentsEnabled = Boolean(fileApiUrl);
+export const attachmentsEnabled = false;
 
 export const isFirebaseConfigured = () =>
   Object.values(firebaseConfig).every(
