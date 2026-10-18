@@ -332,39 +332,27 @@ input {
 }
 
 .chat-message {
-  width: fit-content;
-  max-width: min(90%, 680px);
-  margin-bottom: 14px;
-  padding: 7px 11px;
-  border: 1px solid #292929;
-  border-radius: 8px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 12px;
+  padding: 0;
   overflow-wrap: anywhere;
-}
-
-.chat-message.from-user {
-  margin-left: auto;
-  border-color: #343434;
-  background: #111;
-}
-
-.chat-message.from-owner {
-  margin-right: auto;
-  border-color: #242c35;
-  background: #0b0e12;
+  text-align: left;
 }
 
 .chat-sender {
   margin-bottom: 2px;
-  color: #8f9ba8;
-  font-size: 0.78em;
+  color: #aaa;
+  font-size: 1em;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: normal;
 }
 
 .chat-content {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  text-align: left;
 }
 
 @keyframes blink {
