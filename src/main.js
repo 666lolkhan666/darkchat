@@ -25,6 +25,7 @@ const savedNameKey = "dark-host-name";
 
 let stopSessionWatch = null;
 let stopMessagesWatch = null;
+let messageWatchGeneration = 0;
 let messages = [];
 let visitorMessages = [];
 let visitorUid = "";
@@ -34,7 +35,51 @@ let messageError = "";
 let replyError = "";
 let lastAuthUid = "";
 let visitorTranscript = null;
+let visitorErrorLine = null;
+let pageDisposed = false;
+let attachmentGeneration = 0;
 const attachmentUrls = new Map();
+
+function readSavedName() {
+  try {
+    return localStorage.getItem(savedNameKey) || "";
+  } catch (error) {
+    console.warn("Could not read the saved visitor name.", error);
+    return "";
+  }
+}
+
+function saveVisitorName(name) {
+  try {
+    localStorage.setItem(savedNameKey, name);
+  } catch (error) {
+    console.warn("Could not save the visitor name.", error);
+  }
+}
+
+function clearSavedName() {
+  try {
+    localStorage.removeItem(savedNameKey);
+  } catch (error) {
+    console.warn("Could not clear the saved visitor name.", error);
+  }
+}
+
+function releaseAttachmentUrls() {
+  attachmentGeneration += 1;
+  for (const urlPromise of attachmentUrls.values()) {
+    urlPromise
+      .then((url) => URL.revokeObjectURL(url))
+      .catch((error) => console.warn("Could not release an attachment preview URL.", error));
+  }
+  attachmentUrls.clear();
+}
+
+function stopMessageWatch() {
+  messageWatchGeneration += 1;
+  stopMessagesWatch?.();
+  stopMessagesWatch = null;
+}
 
 function pause(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -113,6 +158,7 @@ function showNamePrompt(errorText = "") {
   app.replaceChildren();
   app.className = "terminal";
   const { row, input } = makeInput("whats your name ?");
+  input.maxLength = 100;
   app.append(row);
   if (errorText) app.append(makeLine(errorText, "error"));
   focusForDesktop(input);
@@ -126,7 +172,7 @@ function showNamePrompt(errorText = "") {
       showOwnerPasswordPrompt();
       return;
     }
-    localStorage.setItem(savedNameKey, name);
+    saveVisitorName(name);
     showMessagePrompt(name);
   });
 }
@@ -140,6 +186,9 @@ function showMessagePrompt(name) {
   visitorTranscript.className = "visitor-transcript";
   visitorTranscript.setAttribute("aria-live", "polite");
   app.append(visitorTranscript);
+  visitorErrorLine = makeLine(messageError, messageError ? "error" : "");
+  visitorErrorLine.setAttribute("role", "status");
+  app.append(visitorErrorLine);
   renderVisitorTranscript();
 
   const addComposer = () => {
@@ -309,6 +358,7 @@ function addAttachmentControl(container, name, threadId, sender, reportStatus) {
 }
 
 function appendAttachment(line, attachment, canSave, sent = false) {
+  const generation = attachmentGeneration;
   const contentType = attachment.type || "application/octet-stream";
   const name = attachment.name || "Attachment";
   const details = document.createElement("span");
@@ -334,6 +384,10 @@ function appendAttachment(line, attachment, canSave, sent = false) {
   tools.className = "attachment-tools";
   line.append(tools);
   urlPromise.then((url) => {
+    if (pageDisposed || generation !== attachmentGeneration) {
+      URL.revokeObjectURL(url);
+      return;
+    }
     const save = document.createElement("a");
     save.className = "text-control attachment-save";
     save.href = url;
@@ -509,7 +563,7 @@ function showOwnerInterface() {
   logout.addEventListener("click", async () => {
     logout.disabled = true;
     try {
-      localStorage.removeItem(savedNameKey);
+      clearSavedName();
       await signOutOwner();
     } catch (error) {
       logout.disabled = false;
@@ -580,10 +634,13 @@ function showOwnerInterface() {
 }
 
 function startMessageListener(isOwner, threadId) {
-  if (stopMessagesWatch) stopMessagesWatch();
+  stopMessageWatch();
+  const generation = messageWatchGeneration;
   messageError = "";
   stopMessagesWatch = watchMessages(
     (nextMessages) => {
+      if (generation !== messageWatchGeneration) return;
+      messageError = "";
       if (isOwner) {
         messages = nextMessages;
         if (!getThreads().some((thread) => thread.id === selectedThreadId)) {
@@ -594,15 +651,21 @@ function startMessageListener(isOwner, threadId) {
         visitorMessages = nextMessages.sort((a, b) =>
           (a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0)
         );
+        if (visitorErrorLine) {
+          visitorErrorLine.className = "line";
+          visitorErrorLine.textContent = "";
+        }
         renderVisitorTranscript();
       }
     },
     (error) => {
+      if (generation !== messageWatchGeneration) return;
       messageError = error.message || "Could not load messages.";
       if (isOwner) showOwnerInterface();
       else {
-        const savedName = localStorage.getItem(savedNameKey);
+        const savedName = readSavedName();
         if (savedName) showMessagePrompt(savedName);
+        else showNamePrompt(messageError);
       }
     },
     threadId
@@ -615,10 +678,9 @@ async function handleAuthChange(user) {
   visitorUid = "";
   messages = [];
   visitorMessages = [];
-  if (stopMessagesWatch) {
-    stopMessagesWatch();
-    stopMessagesWatch = null;
-  }
+  visitorErrorLine = null;
+  stopMessageWatch();
+  releaseAttachmentUrls();
 
   if (user?.uid === ownerUid) {
     startMessageListener(true);
@@ -629,7 +691,7 @@ async function handleAuthChange(user) {
   if (user) {
     visitorUid = user.uid;
     startMessageListener(false, user.uid);
-    const savedName = localStorage.getItem(savedNameKey);
+    const savedName = readSavedName();
     if (savedName) showMessagePrompt(savedName);
     else showNamePrompt();
     return;
@@ -647,9 +709,12 @@ async function boot() {
   stopSessionWatch = watchAuthSession(handleAuthChange);
 }
 
-window.addEventListener("pagehide", () => {
-  stopMessagesWatch?.();
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted) return;
+  pageDisposed = true;
+  stopMessageWatch();
   stopSessionWatch?.();
+  releaseAttachmentUrls();
 });
 
 boot();

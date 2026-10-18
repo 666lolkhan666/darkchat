@@ -21,6 +21,8 @@ service cloud.firestore {
         && data.text.size() <= 2000
         && data.createdAt == request.time
         && data.threadId is string
+        && data.threadId.size() > 0
+        && data.threadId.size() <= 128
         && (
           (
             data.sender == 'user'

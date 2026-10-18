@@ -31,6 +31,12 @@ function cleanMessage(name, text) {
   if (!cleanName || !cleanText) {
     throw new Error("Enter a name and a message.");
   }
+  if (cleanName.length > 100) {
+    throw new Error("Names cannot be longer than 100 characters.");
+  }
+  if (cleanText.length > 2000) {
+    throw new Error("Messages cannot be longer than 2000 characters.");
+  }
   return { name: cleanName, text: cleanText };
 }
 
