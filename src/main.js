@@ -192,23 +192,34 @@ function showMessagePrompt(name) {
   addComposer();
 }
 
+function createChatMessage(message, perspective, threadName = "") {
+  const isOwner = message.sender === "owner";
+  const article = document.createElement("article");
+  article.className = `chat-message ${isOwner ? "from-owner" : "from-user"}`;
+
+  const sender = document.createElement("div");
+  sender.className = "chat-sender";
+  sender.textContent = perspective === "owner"
+    ? (isOwner ? "Dark" : threadName || message.name || "User")
+    : (isOwner ? "Dark" : "You");
+
+  const content = document.createElement("div");
+  content.className = "chat-content";
+  if (message.attachment) {
+    appendAttachment(content, message.attachment, perspective === "owner", !isOwner && perspective !== "owner");
+  } else {
+    content.textContent = message.text || "";
+  }
+
+  article.append(sender, content);
+  return article;
+}
+
 function renderVisitorTranscript() {
   if (!visitorTranscript) return;
   visitorTranscript.replaceChildren();
   for (const message of visitorMessages) {
-    const line = makeLine(message.attachment ? "" : message.text, "visitor-message");
-    if (message.attachment) {
-      appendAttachment(line, message.attachment, false, message.sender === "user");
-    } else if (message.sender === "user") {
-      const tick = document.createElement("span");
-      tick.className = "delivery-check";
-      tick.textContent = " ✓";
-      tick.setAttribute("aria-label", "Sent");
-      line.append(tick);
-    } else {
-      line.classList.add("owner-reply");
-    }
-    visitorTranscript.append(line);
+    visitorTranscript.append(createChatMessage(message, "user"));
   }
 }
 
@@ -516,14 +527,12 @@ function showOwnerInterface() {
   const currentMessages = messages.filter((message) => message.threadId === selectedThreadId);
   if (thread) {
     main.append(makeLine(thread.name, "conversation-title"));
+    const transcript = document.createElement("div");
+    transcript.className = "owner-transcript";
     for (const message of currentMessages) {
-      const line = makeLine(
-        message.attachment ? "" : message.text,
-        message.sender === "owner" ? "message-line owner-reply" : "message-line"
-      );
-      if (message.attachment) appendAttachment(line, message.attachment, true);
-      main.append(line);
+      transcript.append(createChatMessage(message, "owner", thread.name));
     }
+    main.append(transcript);
 
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";

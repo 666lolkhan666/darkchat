@@ -26,6 +26,7 @@ body,
 
 body {
   overflow: hidden;
+  overflow-x: clip;
   font-size: 15px;
   line-height: 1.7;
 }
@@ -132,12 +133,31 @@ input {
   margin-top: 18px;
 }
 
-.visitor-message {
-  margin-bottom: 10px;
+.message-entry,
+.owner-reply-composer {
+  width: min(100%, 720px);
+  min-width: 0;
 }
 
-.owner-reply {
-  color: #aaa;
+.message-entry .input-row,
+.owner-reply-composer .input-row {
+  display: flex;
+  width: 100%;
+}
+
+.message-entry .prompt,
+.owner-reply-composer .prompt {
+  display: flex;
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.message-entry .terminal-input,
+.owner-reply-composer .terminal-input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
 }
 
 .owner-reply-composer {
@@ -306,9 +326,45 @@ input {
   color: #aaa;
 }
 
-.message-line {
-  margin-bottom: 12px;
-  color: #e7e7e7;
+.owner-transcript {
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-message {
+  width: fit-content;
+  max-width: min(90%, 680px);
+  margin-bottom: 14px;
+  padding: 7px 11px;
+  border: 1px solid #292929;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.chat-message.from-user {
+  margin-left: auto;
+  border-color: #343434;
+  background: #111;
+}
+
+.chat-message.from-owner {
+  margin-right: auto;
+  border-color: #242c35;
+  background: #0b0e12;
+}
+
+.chat-sender {
+  margin-bottom: 2px;
+  color: #8f9ba8;
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.chat-content {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 @keyframes blink {

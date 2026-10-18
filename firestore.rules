@@ -42,7 +42,7 @@ service cloud.firestore {
             && data.attachment.type.size() <= 255
             && data.attachment.size is int
             && data.attachment.size > 0
-            && data.attachment.size <= 268435456
+            && data.attachment.size <= 52428800
             && data.attachment.path is string
             && data.attachment.path.matches(
               '^attachments/' + data.threadId + '/[A-Za-z0-9-]+$'
