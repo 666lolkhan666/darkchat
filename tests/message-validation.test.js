@@ -5,6 +5,11 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH
 } from "../src/services/message-validation.js";
+import {
+  normalizeVisitorName,
+  numberedVisitorName,
+  visitorNameKey
+} from "../src/services/visitor-names.js";
 
 test("trims message names and text", () => {
   assert.deepEqual(cleanMessage("  MBI  ", "  Hello  "), {
@@ -33,4 +38,15 @@ test("rejects values exceeding their configured limits", () => {
     () => cleanMessage("name", "m".repeat(MAX_MESSAGE_LENGTH + 1)),
     /Messages cannot be longer/
   );
+});
+
+test("normalizes names consistently for unique reservations", () => {
+  assert.equal(normalizeVisitorName("  Dark   Chat "), "dark chat");
+  assert.equal(visitorNameKey(" DArk/Chat "), "dark／chat");
+});
+
+test("numbers duplicate names and keeps generated names within the limit", () => {
+  assert.equal(numberedVisitorName("Dark", 1), "Dark");
+  assert.equal(numberedVisitorName("Dark", 2), "Dark 2");
+  assert.equal(numberedVisitorName("n".repeat(100), 123).length, 100);
 });

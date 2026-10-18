@@ -282,14 +282,6 @@ input {
   text-align: left;
 }
 
-.chat-sender {
-  margin-bottom: 2px;
-  color: #aaa;
-  font-size: 1em;
-  font-weight: 700;
-  letter-spacing: normal;
-}
-
 .chat-content {
   min-width: 0;
   white-space: pre-wrap;
@@ -299,7 +291,7 @@ input {
 
 @keyframes blink {
   to {
-    visibility: hidden;
+    opacity: 0.3;
   }
 }
 

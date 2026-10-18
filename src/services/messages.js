@@ -31,13 +31,14 @@ export async function sendMessage(name, text, threadId) {
   });
 }
 
-export async function sendReply(name, text, threadId) {
-  const message = cleanMessage(name, text);
+export async function sendReply(text, threadId) {
+  const cleanText = cleanMessage("Dark", text).text;
   if (typeof threadId !== "string" || !threadId || threadId.length > 128) {
     throw new Error("Select a valid conversation.");
   }
   await addDoc(messagesCollection(), {
-    ...message,
+    name: "Dark",
+    text: cleanText,
     threadId,
     sender: "owner",
     createdAt: serverTimestamp()

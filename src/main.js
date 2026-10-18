@@ -19,24 +19,34 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH
 } from "./services/message-validation.js";
+import { deleteVisitorData, reserveVisitorName } from "./services/visitor-names.js";
 
 const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
 const savedNameKey = "dark-host-name";
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 let stopSessionWatch = null;
 let stopMessagesWatch = null;
+let inactivityTimer = null;
 let messageWatchGeneration = 0;
 let messages = [];
 let visitorMessages = [];
+const visitorNamesByUid = new Map();
 let visitorUid = "";
+let currentVisitorName = "";
 let selectedThreadId = "";
 let sidebarOpen = true;
 let messageError = "";
 let replyError = "";
+let ownerNotice = "";
+let sessionExpiredNotice = "";
+let deletingThreadId = "";
 let lastAuthUid = "";
 let visitorTranscript = null;
 let visitorErrorLine = null;
+let lastActivityWrite = 0;
+let storageWarningShown = false;
 
 function readSavedName() {
   try {
@@ -60,6 +70,92 @@ function clearSavedName() {
     localStorage.removeItem(savedNameKey);
   } catch (error) {
     console.warn("Could not clear the saved visitor name.", error);
+  }
+}
+
+function activityKey(uid) {
+  return `dark-host-last-activity:${uid}`;
+}
+
+function readLastActivity(uid) {
+  try {
+    const value = Number(localStorage.getItem(activityKey(uid)));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch (error) {
+    warnStorageOnce("Could not read the visitor activity time.", error);
+    return 0;
+  }
+}
+
+function writeLastActivity(uid, timestamp) {
+  try {
+    localStorage.setItem(activityKey(uid), String(timestamp));
+  } catch (error) {
+    warnStorageOnce("Could not save the visitor activity time.", error);
+  }
+}
+
+function removeLastActivity(uid) {
+  try {
+    localStorage.removeItem(activityKey(uid));
+  } catch (error) {
+    warnStorageOnce("Could not clear the visitor activity time.", error);
+  }
+}
+
+function warnStorageOnce(message, error) {
+  if (storageWarningShown) return;
+  storageWarningShown = true;
+  console.warn(message, error);
+}
+
+function stopInactivityTimer() {
+  window.clearTimeout(inactivityTimer);
+  inactivityTimer = null;
+}
+
+function scheduleInactivityLogout(uid, lastActivity) {
+  stopInactivityTimer();
+  if (uid !== visitorUid || !uid || uid === ownerUid) return;
+
+  const remaining = INACTIVITY_TIMEOUT_MS - (Date.now() - lastActivity);
+  if (remaining <= 0) {
+    void expireVisitorSession(uid);
+    return;
+  }
+  inactivityTimer = window.setTimeout(() => {
+    void expireVisitorSession(uid);
+  }, remaining);
+}
+
+function recordVisitorActivity() {
+  if (!visitorUid || visitorUid === ownerUid) return;
+  const now = Date.now();
+  if (now - lastActivityWrite < 1_000) return;
+  scheduleInactivityLogout(visitorUid, now);
+  if (now - lastActivityWrite >= 10_000) {
+    writeLastActivity(visitorUid, now);
+    lastActivityWrite = now;
+  }
+}
+
+async function expireVisitorSession(uid) {
+  if (uid !== visitorUid || uid === ownerUid) return;
+  stopInactivityTimer();
+  clearSavedName();
+  removeLastActivity(uid);
+  visitorUid = "";
+  sessionExpiredNotice = "You were signed out after one hour of inactivity. Enter your name to continue.";
+  try {
+    await signOutOwner();
+  } catch (error) {
+    visitorUid = uid;
+    scheduleInactivityLogout(uid, Date.now());
+    showMessagePrompt(currentVisitorName);
+    if (visitorErrorLine) {
+      visitorErrorLine.className = "line error";
+      visitorErrorLine.textContent = error.message || "Could not sign out after inactivity.";
+    }
   }
 }
 
@@ -147,11 +243,13 @@ function showNamePrompt(errorText = "") {
   app.className = "terminal";
   const { row, input } = makeInput("whats your name ?");
   input.maxLength = MAX_NAME_LENGTH;
+  const status = makeLine(errorText, errorText ? "error" : "");
+  status.setAttribute("role", "status");
   app.append(row);
-  if (errorText) app.append(makeLine(errorText, "error"));
+  app.append(status);
   focusForDesktop(input);
   row.addEventListener("click", () => input.focus());
-  input.addEventListener("keydown", (event) => {
+  input.addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
     const name = input.value.trim();
@@ -160,12 +258,32 @@ function showNamePrompt(errorText = "") {
       showOwnerPasswordPrompt();
       return;
     }
-    saveVisitorName(name);
-    showMessagePrompt(name);
+    input.disabled = true;
+    status.className = "line status";
+    status.textContent = "Checking name...";
+    const uid = visitorUid;
+    try {
+      const assignment = await reserveVisitorName(name, uid);
+      if (visitorUid !== uid) return;
+      currentVisitorName = assignment.name;
+      saveVisitorName(assignment.name);
+      showMessagePrompt(assignment.name);
+      startMessageListener(false, visitorUid);
+      if (assignment.renamed) {
+        visitorErrorLine.className = "line status";
+        visitorErrorLine.textContent = `That name was in use. Your name is ${assignment.name}.`;
+      }
+    } catch (error) {
+      status.className = "line error";
+      status.textContent = error.message || "Could not reserve that name.";
+      input.disabled = false;
+      input.focus();
+    }
   });
 }
 
 function showMessagePrompt(name) {
+  currentVisitorName = name;
   app.replaceChildren();
   app.className = "terminal";
   app.append(makeLine("olny way to the dark"));
@@ -223,22 +341,18 @@ function showMessagePrompt(name) {
   addComposer();
 }
 
-function createChatMessage(message, perspective, threadName = "") {
+function createChatMessage(message, threadName = "") {
   const isOwner = message.sender === "owner";
   const article = document.createElement("article");
   article.className = `chat-message ${isOwner ? "from-owner" : "from-user"}`;
 
-  const sender = document.createElement("div");
-  sender.className = "chat-sender";
-  sender.textContent = perspective === "owner"
-    ? (isOwner ? "Dark" : threadName || message.name || "User")
-    : (isOwner ? "Dark" : "You");
+  const senderName = isOwner ? "Dark" : threadName || message.name || "User";
 
   const content = document.createElement("div");
   content.className = "chat-content";
-  content.textContent = message.text || "";
+  content.append(document.createTextNode(`${senderName}: `), document.createTextNode(message.text || ""));
 
-  article.append(sender, content);
+  article.append(content);
   return article;
 }
 
@@ -246,7 +360,7 @@ function renderVisitorTranscript() {
   if (!visitorTranscript) return;
   visitorTranscript.replaceChildren();
   for (const message of visitorMessages) {
-    visitorTranscript.append(createChatMessage(message, "user"));
+    visitorTranscript.append(createChatMessage(message, currentVisitorName));
   }
 }
 
@@ -295,7 +409,36 @@ function getThreads() {
     if (message.sender === "user") thread.name = message.name;
     threads.set(message.threadId, thread);
   }
+  for (const thread of threads.values()) {
+    thread.name = visitorNamesByUid.get(thread.id) || thread.name;
+  }
   return [...threads.values()];
+}
+
+async function ensureVisitorNames(currentMessages) {
+  const names = new Map();
+  for (const message of currentMessages) {
+    if (message.sender === "user" && message.threadId && message.name && !names.has(message.threadId)) {
+      names.set(message.threadId, message.name);
+    }
+  }
+
+  const failures = [];
+  await Promise.all([...names].map(async ([uid, name]) => {
+    if (visitorNamesByUid.has(uid)) return;
+    try {
+      const assignment = await reserveVisitorName(name, uid);
+      visitorNamesByUid.set(uid, assignment.name);
+    } catch (error) {
+      failures.push(error);
+    }
+  }));
+  if (failures.length) {
+    console.warn("Some existing visitor names could not be reserved.", failures);
+    ownerNotice = `Could not reserve every existing name. Publish the current Firestore rules. ${failures[0].message || ""}`;
+  } else if (ownerNotice.startsWith("Could not reserve every existing name.")) {
+    ownerNotice = "";
+  }
 }
 
 function showOwnerInterface() {
@@ -330,6 +473,7 @@ function showOwnerInterface() {
     entry.addEventListener("click", () => {
       selectedThreadId = thread.id;
       replyError = "";
+      ownerNotice = "";
       showOwnerInterface();
     });
     userList.append(entry);
@@ -360,10 +504,41 @@ function showOwnerInterface() {
   const currentMessages = messages.filter((message) => message.threadId === selectedThreadId);
   if (thread) {
     main.append(makeLine(thread.name, "conversation-title"));
+    const clearData = document.createElement("button");
+    clearData.className = "text-control clear-user-data";
+    clearData.type = "button";
+    clearData.textContent = "Clear user data";
+    clearData.disabled = deletingThreadId === thread.id;
+    clearData.addEventListener("click", async () => {
+      if (deletingThreadId === thread.id) return;
+      if (!window.confirm(`Permanently clear all messages and the name reservation for ${thread.name}?`)) {
+        return;
+      }
+      deletingThreadId = thread.id;
+      clearData.disabled = true;
+      try {
+        const count = await deleteVisitorData(thread.id);
+        if (lastAuthUid !== ownerUid) return;
+        messages = messages.filter((message) => message.threadId !== thread.id);
+        visitorNamesByUid.delete(thread.id);
+        selectedThreadId = getThreads()[0]?.id || "";
+        replyError = "";
+        ownerNotice = `Cleared ${count} messages and released ${thread.name}'s name.`;
+        deletingThreadId = "";
+        showOwnerInterface();
+      } catch (error) {
+        if (lastAuthUid !== ownerUid) return;
+        replyError = "";
+        ownerNotice = `Could not clear visitor data. ${error.message || ""}`;
+        deletingThreadId = "";
+        showOwnerInterface();
+      }
+    });
+    main.append(clearData);
     const transcript = document.createElement("div");
     transcript.className = "owner-transcript";
     for (const message of currentMessages) {
-      transcript.append(createChatMessage(message, "owner", thread.name));
+      transcript.append(createChatMessage(message, thread.name));
     }
     main.append(transcript);
 
@@ -382,7 +557,7 @@ function showOwnerInterface() {
       if (!text || input.disabled) return;
       input.disabled = true;
       try {
-        await sendReply(thread.name, text, thread.id);
+        await sendReply(text, thread.id);
         replyError = "";
         showOwnerInterface();
       } catch (error) {
@@ -403,6 +578,7 @@ function showOwnerInterface() {
   } else if (messageError) {
     main.append(makeLine(messageError, "error"));
   }
+  if (ownerNotice) main.append(makeLine(ownerNotice, "status"));
   app.append(sidebar, main);
 }
 
@@ -411,11 +587,13 @@ function startMessageListener(isOwner, threadId) {
   const generation = messageWatchGeneration;
   messageError = "";
   stopMessagesWatch = watchMessages(
-    (nextMessages) => {
+    async (nextMessages) => {
       if (generation !== messageWatchGeneration) return;
       messageError = "";
       if (isOwner) {
         messages = nextMessages;
+        await ensureVisitorNames(nextMessages);
+        if (generation !== messageWatchGeneration) return;
         if (!getThreads().some((thread) => thread.id === selectedThreadId)) {
           selectedThreadId = getThreads()[0]?.id || "";
         }
@@ -449,8 +627,11 @@ async function handleAuthChange(user) {
   if (user?.uid === lastAuthUid) return;
   lastAuthUid = user?.uid || "";
   visitorUid = "";
+  currentVisitorName = "";
+  stopInactivityTimer();
   messages = [];
   visitorMessages = [];
+  deletingThreadId = "";
   visitorErrorLine = null;
   stopMessageWatch();
 
@@ -462,22 +643,50 @@ async function handleAuthChange(user) {
 
   if (user) {
     visitorUid = user.uid;
-    startMessageListener(false, user.uid);
+    const lastActivity = readLastActivity(user.uid) || Date.now();
+    lastActivityWrite = lastActivity;
+    writeLastActivity(user.uid, lastActivity);
+    scheduleInactivityLogout(user.uid, lastActivity);
+    if (visitorUid !== user.uid) return;
     const savedName = readSavedName();
-    if (savedName) showMessagePrompt(savedName);
-    else showNamePrompt();
+    if (savedName) {
+      try {
+        const assignment = await reserveVisitorName(savedName, user.uid);
+        if (lastAuthUid !== user.uid) return;
+        currentVisitorName = assignment.name;
+        saveVisitorName(assignment.name);
+        showMessagePrompt(assignment.name);
+        startMessageListener(false, user.uid);
+        if (assignment.renamed) {
+          visitorErrorLine.className = "line status";
+          visitorErrorLine.textContent = `That name was in use. Your name is ${assignment.name}.`;
+        }
+      } catch (error) {
+        if (lastAuthUid === user.uid) showNamePrompt(error.message || "Could not reserve that name.");
+      }
+    } else {
+      const notice = sessionExpiredNotice;
+      sessionExpiredNotice = "";
+      showNamePrompt(notice);
+    }
     return;
   }
 
   try {
     await ensureVisitorSession();
   } catch (error) {
-    showNamePrompt(error.message || "Visitor session unavailable.");
+    const notice = sessionExpiredNotice;
+    sessionExpiredNotice = "";
+    showNamePrompt(notice || error.message || "Visitor session unavailable.");
   }
 }
 
 async function boot() {
   await startup();
+  for (const eventName of ["pointerdown", "keydown", "input", "touchstart", "scroll"]) {
+    document.addEventListener(eventName, recordVisitorActivity, { passive: true });
+  }
+  document.addEventListener("pointermove", recordVisitorActivity, { passive: true });
   stopSessionWatch = watchAuthSession(handleAuthChange);
 }
 

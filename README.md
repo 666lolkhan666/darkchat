@@ -28,6 +28,8 @@ npm run build
 2. Enable **Email/Password** and **Anonymous** sign-in providers in Firebase Authentication. Create the owner account. The password is set in Firebase, never in this repository or frontend source. Anonymous auth gives each visitor a persistent Firebase UID so the page can restore their conversation after refresh.
 3. The web app's public configuration is populated in `src/firebase/config.js`. Set `ownerEmail` to the owner account's email and `ownerUid` to its Firebase Authentication UID. Firebase web config is public; do not put private service-account credentials here.
 4. Create a Cloud Firestore database. Set the same owner UID in `firestore.rules`, then publish those rules. Authenticated anonymous visitors can create messages and read only their own thread; only the configured owner UID can read every thread and send replies. Both sides receive real-time updates. Publish `storage.rules` as well to keep Firebase Storage access disabled.
+5. Visitor names are reserved case-insensitively and repeated names get a numeric suffix (`Name`, `Name 2`, `Name 3`, ...). The owner can clear a selected visitor's messages and release their reserved name from the owner page. Visitor sessions automatically sign out after one hour without activity.
+
 File attachments are not part of this application. Firebase Storage initialization and upload code have been removed; the included `storage.rules` deny all file access.
 
 The visible owner-name prompt (`MBI DARK`) is a UX step, not an authorization boundary. Access is authenticated by Firebase Authentication, and Firestore rules restrict message access. Set any development password directly in Firebase Authentication; credentials must not be placed in this repository or frontend bundle.
