@@ -235,8 +235,66 @@ input {
 }
 
 .user-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.user-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unread-dot {
+  display: inline-block;
+  flex: 0 0 0.55em;
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  background: #e7e7e7;
+  box-shadow: 0 0 7px #e7e7e7;
+}
+
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  min-height: 1.8em;
+  margin: 0 0 10px;
+  color: #888;
+  font-size: 0.85em;
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+}
+
+.typing-dots span {
+  width: 0.35em;
+  height: 0.35em;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  animation: typing-idle 1.2s ease-in-out infinite alternate;
+}
+
+.typing-dots.active span {
+  animation: typing-pulse 900ms ease-in-out infinite alternate;
+}
+
+.typing-dots.active span:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.typing-dots.active span:nth-child(3) {
+  animation-delay: 300ms;
 }
 
 .logout {
@@ -268,6 +326,13 @@ input {
   color: #aaa;
 }
 
+.account-id {
+  margin-top: -18px;
+  margin-bottom: 16px;
+  color: #666;
+  font-size: 0.8em;
+}
+
 .owner-transcript {
   width: 100%;
   min-width: 0;
@@ -292,6 +357,31 @@ input {
 @keyframes blink {
   to {
     opacity: 0.3;
+  }
+}
+
+@keyframes typing-pulse {
+  to {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes typing-idle {
+  to {
+    opacity: 0.85;
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots span {
+    animation: none;
+    opacity: 0.7;
+  }
+
+  .typing-dots.active span {
+    opacity: 1;
   }
 }
 

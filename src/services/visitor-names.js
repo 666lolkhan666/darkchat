@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   query,
@@ -16,6 +17,8 @@ import { MAX_NAME_LENGTH } from "./message-validation.js";
 const profilesCollection = () => collection(database, "visitorNames");
 const reservationsCollection = () => collection(database, "visitorNameKeys");
 const messagesCollection = () => collection(database, "messages");
+const threadReadsCollection = () => collection(database, "threadReads");
+const typingStatesCollection = () => collection(database, "typingStates");
 
 export function normalizeVisitorName(name) {
   return name.trim().replace(/\s+/gu, " ").toLowerCase();
@@ -60,7 +63,7 @@ export async function reserveVisitorName(requestedName, uid) {
     const profile = await transaction.get(profileRef);
     if (profile.exists()) {
       if (!profile.data().active) {
-        throw new Error("This name is being cleared. Please wait and try again.");
+        throw new Error("This account was removed from chat. Its name remains reserved; contact the owner for access.");
       }
       return { name: profile.data().name, renamed: profile.data().name !== baseName };
     }
@@ -96,16 +99,30 @@ export async function reserveVisitorName(requestedName, uid) {
   });
 }
 
-export async function deleteVisitorData(uid) {
+export async function removeVisitorAccount(uid) {
   requireDatabase();
   if (auth.currentUser.uid !== ownerUid) {
-    throw new Error("Only the owner can clear visitor data.");
+    throw new Error("Only the owner can remove a visitor account.");
   }
   if (!uid || uid === ownerUid) {
     throw new Error("Select a valid visitor.");
   }
 
   const profileRef = doc(profilesCollection(), uid);
+  const existingProfile = await getDoc(profileRef);
+  if (!existingProfile.exists()) {
+    const messages = await getDocs(
+      query(
+        messagesCollection(),
+        where("threadId", "==", uid),
+        limit(400)
+      )
+    );
+    const legacyName = messages.docs.find((message) => message.data().sender === "user")
+      ?.data().name;
+    if (legacyName) await reserveVisitorName(legacyName, uid);
+  }
+
   const profileData = await runTransaction(database, async (transaction) => {
     const profile = await transaction.get(profileRef);
     if (!profile.exists()) return null;
@@ -127,10 +144,10 @@ export async function deleteVisitorData(uid) {
   }
 
   if (profileData) {
-    const batch = writeBatch(database);
-    batch.delete(profileRef);
-    batch.delete(doc(reservationsCollection(), profileData.nameKey));
-    await batch.commit();
+    const cleanup = writeBatch(database);
+    cleanup.delete(doc(threadReadsCollection(), uid));
+    cleanup.delete(doc(typingStatesCollection(), uid));
+    await cleanup.commit();
   }
 
   return deleted;

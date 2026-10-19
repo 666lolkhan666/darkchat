@@ -42,6 +42,12 @@ service cloud.firestore {
             && isOwner()
             && data.name == 'Dark'
             && data.threadId != '5Uc5gT6JclWsAE6fLouHV8TRsVe2'
+            && exists(
+              /databases/$(database)/documents/visitorNames/$(data.threadId)
+            )
+            && get(
+              /databases/$(database)/documents/visitorNames/$(data.threadId)
+            ).data.active == true
           )
         );
     }
@@ -142,9 +148,87 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
+    match /threadReads/{threadId} {
+      allow get, list: if isOwner();
+      allow create: if isOwner()
+        && request.resource.data.keys().hasOnly(['lastReadAt', 'updatedAt'])
+        && request.resource.data.lastReadAt is timestamp
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner()
+        && request.resource.data.keys().hasOnly(['lastReadAt', 'updatedAt'])
+        && request.resource.data.lastReadAt is timestamp
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['lastReadAt', 'updatedAt']);
+      allow delete: if isOwner();
+    }
+
+    match /typingStates/{threadId} {
+      allow get: if isOwner() || (request.auth != null && request.auth.uid == threadId);
+      allow list: if isOwner();
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly([
+          'visitorTyping', 'ownerTyping', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'visitorTyping', 'ownerTyping', 'updatedAt'
+        ])
+        && request.resource.data.visitorTyping is bool
+        && request.resource.data.ownerTyping is bool
+        && request.resource.data.updatedAt == request.time
+        && exists(
+          /databases/$(database)/documents/visitorNames/$(threadId)
+        )
+        && get(
+          /databases/$(database)/documents/visitorNames/$(threadId)
+        ).data.active == true
+        && (
+          (
+            isOwner()
+            && request.resource.data.visitorTyping == false
+          )
+          || (
+            request.auth.uid == threadId
+            && request.resource.data.ownerTyping == false
+          )
+        );
+      allow update: if request.auth != null
+        && request.resource.data.updatedAt == request.time
+        && exists(
+          /databases/$(database)/documents/visitorNames/$(threadId)
+        )
+        && get(
+          /databases/$(database)/documents/visitorNames/$(threadId)
+        ).data.active == true
+        && (
+          (
+            isOwner()
+            && request.resource.data.ownerTyping is bool
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['ownerTyping', 'updatedAt'])
+          )
+          || (
+            request.auth.uid == threadId
+            && request.resource.data.visitorTyping is bool
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['visitorTyping', 'updatedAt'])
+          )
+        );
+      allow delete: if isOwner();
+    }
+
     match /messages/{messageId} {
       allow read: if isOwner()
-        || (request.auth != null && resource.data.threadId == request.auth.uid);
+        || (
+          request.auth != null
+          && resource.data.threadId == request.auth.uid
+          && exists(
+            /databases/$(database)/documents/visitorNames/$(request.auth.uid)
+          )
+          && get(
+            /databases/$(database)/documents/visitorNames/$(request.auth.uid)
+          ).data.active == true
+        );
       allow create: if validMessage();
       allow update: if false;
       allow delete: if isOwner();

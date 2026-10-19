@@ -11,15 +11,23 @@ import {
   watchAuthSession
 } from "./services/auth.js";
 import {
+  markThreadRead,
   sendMessage,
   sendReply,
-  watchMessages
+  setTypingState,
+  watchMessages,
+  watchThreadReads,
+  watchTypingState
 } from "./services/messages.js";
 import {
   MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH
 } from "./services/message-validation.js";
-import { deleteVisitorData, reserveVisitorName } from "./services/visitor-names.js";
+import {
+  compareTimestamps,
+  isUnreadVisitorMessage
+} from "./services/conversation-state.js";
+import { removeVisitorAccount, reserveVisitorName } from "./services/visitor-names.js";
 
 const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
@@ -28,14 +36,30 @@ const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 let stopSessionWatch = null;
 let stopMessagesWatch = null;
+let stopThreadReadsWatch = null;
+let stopTypingWatch = null;
 let inactivityTimer = null;
+let typingTimer = null;
+let typingExpiryTimer = null;
 let messageWatchGeneration = 0;
 let messages = [];
 let visitorMessages = [];
 const visitorNamesByUid = new Map();
+const visitorNameReservationPromises = new Map();
+const threadReadAtByUid = new Map();
 let visitorUid = "";
 let currentVisitorName = "";
 let selectedThreadId = "";
+let activeTypingThreadId = "";
+let activeTypingSender = "";
+let localTypingActive = false;
+let typingState = null;
+let typingError = "";
+let typingOtherName = "Visitor";
+let visitorTypingLabel = null;
+let visitorTypingDots = null;
+let ownerTypingLabel = null;
+let ownerTypingDots = null;
 let sidebarOpen = true;
 let messageError = "";
 let replyError = "";
@@ -47,6 +71,165 @@ let visitorTranscript = null;
 let visitorErrorLine = null;
 let lastActivityWrite = 0;
 let storageWarningShown = false;
+
+function timestampMillis(value) {
+  return typeof value?.toMillis === "function" ? value.toMillis() : 0;
+}
+
+function makeTypingIndicator() {
+  const indicator = document.createElement("div");
+  indicator.className = "typing-indicator";
+  indicator.setAttribute("aria-live", "polite");
+  indicator.setAttribute("aria-label", "Typing status");
+  const label = document.createElement("span");
+  const dots = document.createElement("span");
+  dots.className = "typing-dots";
+  dots.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < 3; index += 1) {
+    const dot = document.createElement("span");
+    dots.append(dot);
+  }
+  indicator.append(label, dots);
+  return { indicator, label, dots };
+}
+
+function refreshTypingIndicator() {
+  const isOwner = Boolean(ownerTypingLabel);
+  const label = isOwner ? ownerTypingLabel : visitorTypingLabel;
+  const dots = isOwner ? ownerTypingDots : visitorTypingDots;
+  if (!label || !dots) return;
+
+  if (typingError) {
+    label.textContent = "Typing status unavailable.";
+    dots.classList.remove("active");
+    return;
+  }
+
+  const updatedAt = timestampMillis(typingState?.updatedAt);
+  const fresh = updatedAt > 0 && Date.now() - updatedAt < 5_000;
+  const otherIsTyping = fresh && (
+    isOwner ? typingState?.visitorTyping === true : typingState?.ownerTyping === true
+  );
+  const otherName = isOwner ? typingOtherName : "Dark";
+  label.textContent = `${otherName} is ${otherIsTyping ? "typing" : "not typing"}`;
+  dots.classList.toggle("active", otherIsTyping);
+}
+
+function clearLocalTyping() {
+  window.clearTimeout(typingTimer);
+  typingTimer = null;
+  if (!localTypingActive || !activeTypingThreadId || !activeTypingSender) return;
+  localTypingActive = false;
+  void setTypingState(activeTypingThreadId, activeTypingSender, false).catch((error) => {
+    typingError = error.message || "Could not update typing status.";
+    refreshTypingIndicator();
+  });
+}
+
+function updateLocalTyping(threadId, sender, isTyping) {
+  if (activeTypingThreadId !== threadId || activeTypingSender !== sender) return;
+  window.clearTimeout(typingTimer);
+  typingTimer = null;
+
+  if (isTyping) {
+    if (!localTypingActive) {
+      localTypingActive = true;
+      void setTypingState(threadId, sender, true).catch((error) => {
+        typingError = error.message || "Could not update typing status.";
+        refreshTypingIndicator();
+      });
+    }
+    typingTimer = window.setTimeout(clearLocalTyping, 2_000);
+    return;
+  }
+  clearLocalTyping();
+}
+
+function watchTypingForThread(threadId, sender, otherName = sender === "owner" ? "Visitor" : "Dark") {
+  if (activeTypingThreadId === threadId && activeTypingSender === sender) {
+    typingOtherName = otherName;
+    refreshTypingIndicator();
+    return;
+  }
+
+  clearLocalTyping();
+  window.clearTimeout(typingExpiryTimer);
+  typingExpiryTimer = null;
+  stopTypingWatch?.();
+  stopTypingWatch = null;
+  activeTypingThreadId = threadId;
+  activeTypingSender = sender;
+  typingState = null;
+  typingError = "";
+  typingOtherName = otherName;
+  if (!threadId) {
+    refreshTypingIndicator();
+    return;
+  }
+
+  stopTypingWatch = watchTypingState(
+    threadId,
+    (state) => {
+      if (activeTypingThreadId !== threadId) return;
+      window.clearTimeout(typingExpiryTimer);
+      typingState = state;
+      typingError = "";
+      const updatedAt = timestampMillis(state?.updatedAt);
+      const expiresIn = 5_000 - (Date.now() - updatedAt);
+      if (state?.visitorTyping || state?.ownerTyping) {
+        if (expiresIn > 0) {
+          typingExpiryTimer = window.setTimeout(refreshTypingIndicator, expiresIn);
+        }
+      }
+      refreshTypingIndicator();
+    },
+    (error) => {
+      if (activeTypingThreadId !== threadId) return;
+      typingError = error.message || "Could not load typing status.";
+      refreshTypingIndicator();
+    }
+  );
+}
+
+function latestVisitorMessage(threadId) {
+  return messages
+    .filter((message) => message.threadId === threadId && message.sender === "user")
+    .reduce((latest, message) =>
+      !latest || compareTimestamps(message.createdAt, latest.createdAt) > 0
+        ? message
+        : latest, null);
+}
+
+function threadHasUnread(threadId) {
+  return messages.some((message) =>
+    message.threadId === threadId &&
+    isUnreadVisitorMessage(message, threadReadAtByUid.get(threadId))
+  );
+}
+
+async function markThreadAsRead(threadId) {
+  const latest = latestVisitorMessage(threadId);
+  if (!latest?.createdAt) return;
+  const currentReadAt = threadReadAtByUid.get(threadId);
+  if (compareTimestamps(currentReadAt, latest.createdAt) >= 0) return;
+
+  const previousReadAt = currentReadAt;
+  threadReadAtByUid.set(threadId, latest.createdAt);
+  try {
+    await markThreadRead(threadId, latest.createdAt);
+    if (ownerNotice.startsWith("Could not save the read status.")) {
+      ownerNotice = "";
+      showOwnerInterface();
+    }
+  } catch (error) {
+    if (threadReadAtByUid.get(threadId) === latest.createdAt) {
+      if (previousReadAt) threadReadAtByUid.set(threadId, previousReadAt);
+      else threadReadAtByUid.delete(threadId);
+    }
+    ownerNotice = `Could not save the read status. ${error.message || ""}`;
+    showOwnerInterface();
+  }
+}
 
 function readSavedName() {
   try {
@@ -163,6 +346,16 @@ function stopMessageWatch() {
   messageWatchGeneration += 1;
   stopMessagesWatch?.();
   stopMessagesWatch = null;
+  stopThreadReadsWatch?.();
+  stopThreadReadsWatch = null;
+  clearLocalTyping();
+  window.clearTimeout(typingExpiryTimer);
+  typingExpiryTimer = null;
+  stopTypingWatch?.();
+  stopTypingWatch = null;
+  activeTypingThreadId = "";
+  activeTypingSender = "";
+  typingState = null;
 }
 
 function pause(ms) {
@@ -291,10 +484,19 @@ function showMessagePrompt(name) {
   visitorTranscript = document.createElement("div");
   visitorTranscript.className = "visitor-transcript";
   visitorTranscript.setAttribute("aria-live", "polite");
+  const typing = makeTypingIndicator();
+  visitorTypingLabel = typing.label;
+  visitorTypingDots = typing.dots;
+  typingOtherName = "Dark";
+  ownerTypingLabel = null;
+  ownerTypingDots = null;
+  app.append(typing.indicator);
   app.append(visitorTranscript);
   visitorErrorLine = makeLine(messageError, messageError ? "error" : "");
   visitorErrorLine.setAttribute("role", "status");
   app.append(visitorErrorLine);
+  watchTypingForThread(visitorUid, "visitor");
+  refreshTypingIndicator();
   renderVisitorTranscript();
 
   const addComposer = () => {
@@ -303,6 +505,9 @@ function showMessagePrompt(name) {
     const { row, input } = makeInput("", "", "text");
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Message");
+    input.addEventListener("input", () => {
+      updateLocalTyping(visitorUid, "visitor", Boolean(input.value.trim()));
+    });
     const status = makeLine();
     status.setAttribute("role", "status");
     entry.append(row, status);
@@ -315,6 +520,7 @@ function showMessagePrompt(name) {
       const text = input.value.trim();
       if (!text || input.disabled) return;
       input.disabled = true;
+      updateLocalTyping(visitorUid, "visitor", false);
       let timeoutId;
       try {
         await Promise.race([
@@ -427,8 +633,21 @@ async function ensureVisitorNames(currentMessages) {
   await Promise.all([...names].map(async ([uid, name]) => {
     if (visitorNamesByUid.has(uid)) return;
     try {
-      const assignment = await reserveVisitorName(name, uid);
-      visitorNamesByUid.set(uid, assignment.name);
+      const existingReservation = visitorNameReservationPromises.get(uid);
+      if (existingReservation) {
+        await existingReservation;
+        return;
+      }
+
+      const reservation = reserveVisitorName(name, uid)
+        .then((assignment) => {
+          visitorNamesByUid.set(uid, assignment.name);
+        })
+        .finally(() => {
+          visitorNameReservationPromises.delete(uid);
+        });
+      visitorNameReservationPromises.set(uid, reservation);
+      await reservation;
     } catch (error) {
       failures.push(error);
     }
@@ -469,11 +688,22 @@ function showOwnerInterface() {
     const entry = document.createElement("button");
     entry.className = `text-control user-entry${selectedThreadId === thread.id ? " selected" : ""}`;
     entry.type = "button";
-    entry.textContent = thread.name;
+    const name = document.createElement("span");
+    name.className = "user-entry-name";
+    name.textContent = thread.name;
+    entry.append(name);
+    if (threadHasUnread(thread.id)) {
+      const unreadDot = document.createElement("span");
+      unreadDot.className = "unread-dot";
+      unreadDot.setAttribute("aria-label", "Unread messages");
+      unreadDot.setAttribute("role", "img");
+      entry.append(unreadDot);
+    }
     entry.addEventListener("click", () => {
       selectedThreadId = thread.id;
       replyError = "";
       ownerNotice = "";
+      void markThreadAsRead(thread.id);
       showOwnerInterface();
     });
     userList.append(entry);
@@ -502,39 +732,52 @@ function showOwnerInterface() {
   if (!sidebarOpen) main.append(createToggle());
   const thread = getThreads().find((item) => item.id === selectedThreadId);
   const currentMessages = messages.filter((message) => message.threadId === selectedThreadId);
+  const typing = makeTypingIndicator();
+  ownerTypingLabel = typing.label;
+  ownerTypingDots = typing.dots;
+  visitorTypingLabel = null;
+  visitorTypingDots = null;
+  typingOtherName = thread?.name || "Visitor";
+  main.append(typing.indicator);
+  watchTypingForThread(thread?.id || "", "owner", thread?.name || "Visitor");
+  refreshTypingIndicator();
   if (thread) {
     main.append(makeLine(thread.name, "conversation-title"));
-    const clearData = document.createElement("button");
-    clearData.className = "text-control clear-user-data";
-    clearData.type = "button";
-    clearData.textContent = "Clear user data";
-    clearData.disabled = deletingThreadId === thread.id;
-    clearData.addEventListener("click", async () => {
+    main.append(makeLine(`Account ID: ${thread.id}`, "account-id"));
+    const removeAccount = document.createElement("button");
+    removeAccount.className = "text-control remove-account";
+    removeAccount.type = "button";
+    removeAccount.textContent = "Remove account";
+    removeAccount.disabled = deletingThreadId === thread.id;
+    removeAccount.addEventListener("click", async () => {
       if (deletingThreadId === thread.id) return;
-      if (!window.confirm(`Permanently clear all messages and the name reservation for ${thread.name}?`)) {
+      if (!window.confirm(
+        `Remove ${thread.name} from chat and permanently delete their message history? ` +
+        "Their name will remain reserved. This does not delete their Firebase sign-in account."
+      )) {
         return;
       }
       deletingThreadId = thread.id;
-      clearData.disabled = true;
+      removeAccount.disabled = true;
       try {
-        const count = await deleteVisitorData(thread.id);
+        const count = await removeVisitorAccount(thread.id);
         if (lastAuthUid !== ownerUid) return;
         messages = messages.filter((message) => message.threadId !== thread.id);
-        visitorNamesByUid.delete(thread.id);
+        threadReadAtByUid.delete(thread.id);
         selectedThreadId = getThreads()[0]?.id || "";
         replyError = "";
-        ownerNotice = `Cleared ${count} messages and released ${thread.name}'s name.`;
+        ownerNotice = `Removed ${thread.name} from chat and deleted ${count} messages. Their name remains reserved.`;
         deletingThreadId = "";
         showOwnerInterface();
       } catch (error) {
         if (lastAuthUid !== ownerUid) return;
         replyError = "";
-        ownerNotice = `Could not clear visitor data. ${error.message || ""}`;
+        ownerNotice = `Could not remove visitor account. ${error.message || ""}`;
         deletingThreadId = "";
         showOwnerInterface();
       }
     });
-    main.append(clearData);
+    main.append(removeAccount);
     const transcript = document.createElement("div");
     transcript.className = "owner-transcript";
     for (const message of currentMessages) {
@@ -547,6 +790,9 @@ function showOwnerInterface() {
     const { row, input } = makeInput("", "", "text");
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
+    input.addEventListener("input", () => {
+      updateLocalTyping(thread.id, "owner", Boolean(input.value.trim()));
+    });
     const status = makeLine(replyError, replyError ? "error" : "");
     status.setAttribute("role", "status");
     row.addEventListener("click", () => input.focus());
@@ -556,6 +802,7 @@ function showOwnerInterface() {
       const text = input.value.trim();
       if (!text || input.disabled) return;
       input.disabled = true;
+      updateLocalTyping(thread.id, "owner", false);
       try {
         await sendReply(text, thread.id);
         replyError = "";
@@ -597,6 +844,7 @@ function startMessageListener(isOwner, threadId) {
         if (!getThreads().some((thread) => thread.id === selectedThreadId)) {
           selectedThreadId = getThreads()[0]?.id || "";
         }
+        if (selectedThreadId) void markThreadAsRead(selectedThreadId);
         showOwnerInterface();
       } else {
         visitorMessages = nextMessages.sort((a, b) =>
@@ -621,6 +869,23 @@ function startMessageListener(isOwner, threadId) {
     },
     threadId
   );
+  if (isOwner) {
+    stopThreadReadsWatch = watchThreadReads(
+      (reads) => {
+        if (generation !== messageWatchGeneration) return;
+        threadReadAtByUid.clear();
+        for (const [uid, readAt] of reads) threadReadAtByUid.set(uid, readAt);
+        showOwnerInterface();
+      },
+      (error) => {
+        if (generation !== messageWatchGeneration) return;
+        ownerNotice = `Could not load unread statuses. ${error.message || ""}`;
+        showOwnerInterface();
+      }
+    );
+  } else {
+    watchTypingForThread(threadId, "visitor");
+  }
 }
 
 async function handleAuthChange(user) {
@@ -631,6 +896,7 @@ async function handleAuthChange(user) {
   stopInactivityTimer();
   messages = [];
   visitorMessages = [];
+  threadReadAtByUid.clear();
   deletingThreadId = "";
   visitorErrorLine = null;
   stopMessageWatch();

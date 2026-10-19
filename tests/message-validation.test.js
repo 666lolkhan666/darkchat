@@ -10,6 +10,10 @@ import {
   numberedVisitorName,
   visitorNameKey
 } from "../src/services/visitor-names.js";
+import {
+  compareTimestamps,
+  isUnreadVisitorMessage
+} from "../src/services/conversation-state.js";
 
 test("trims message names and text", () => {
   assert.deepEqual(cleanMessage("  MBI  ", "  Hello  "), {
@@ -49,4 +53,27 @@ test("numbers duplicate names and keeps generated names within the limit", () =>
   assert.equal(numberedVisitorName("Dark", 1), "Dark");
   assert.equal(numberedVisitorName("Dark", 2), "Dark 2");
   assert.equal(numberedVisitorName("n".repeat(100), 123).length, 100);
+});
+
+test("marks only new visitor messages unread", () => {
+  const timestamp = (seconds, nanoseconds = 0) => ({
+    seconds,
+    nanoseconds,
+    toMillis: () => seconds * 1_000 + nanoseconds / 1_000_000
+  });
+  const readAt = timestamp(10, 200_000);
+  assert.equal(
+    isUnreadVisitorMessage({ sender: "user", createdAt: timestamp(10, 300_000) }, readAt),
+    true
+  );
+  assert.equal(
+    isUnreadVisitorMessage({ sender: "user", createdAt: timestamp(10, 200_000) }, readAt),
+    false
+  );
+  assert.equal(
+    isUnreadVisitorMessage({ sender: "owner", createdAt: timestamp(10, 300_000) }, readAt),
+    false
+  );
+  assert.equal(isUnreadVisitorMessage({ sender: "user" }, readAt), true);
+  assert.equal(compareTimestamps(timestamp(10, 300_000), readAt), 100_000);
 });
