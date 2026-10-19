@@ -45,6 +45,7 @@ const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
 const savedNameKey = "dark-host-name";
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
+const cursorMeasureContext = document.createElement("canvas").getContext("2d");
 
 let stopSessionWatch = null;
 let stopMessagesWatch = null;
@@ -233,17 +234,19 @@ function watchTypingForThread(
     );
 }
 
-function latestVisitorMessage(threadId) {
-  return messages
-    .filter((message) => message.threadId === threadId && message.sender === "user")
-    .reduce((latest, message) =>
-      !latest || compareTimestamps(message.createdAt, latest.createdAt) > 0
-        ? message
-        : latest, null);
+function latestVisitorMessagesByUid() {
+  const latestByUid = new Map();
+  for (const message of messages) {
+    if (message.sender !== "user" || !message.threadId) continue;
+    const latest = latestByUid.get(message.threadId);
+    if (!latest || compareTimestamps(message.createdAt, latest.createdAt) > 0) {
+      latestByUid.set(message.threadId, message);
+    }
+  }
+  return latestByUid;
 }
 
-function threadHasUnread(threadId) {
-  const thread = getThreads().find((item) => item.id === threadId);
+function threadHasUnread(thread) {
   return Boolean(thread?.messages.some((message) =>
     isUnreadVisitorMessage(message, threadReadAtByUid.get(message.threadId))
   ));
@@ -252,8 +255,9 @@ function threadHasUnread(threadId) {
 async function markThreadAsRead(threadId) {
   const thread = getThreads().find((item) => item.id === threadId);
   if (!thread) return;
+  const latestByUid = latestVisitorMessagesByUid();
   for (const uid of thread.accounts) {
-    const latest = latestVisitorMessage(uid);
+    const latest = latestByUid.get(uid);
     if (!latest?.createdAt) continue;
     const currentReadAt = threadReadAtByUid.get(uid);
     if (compareTimestamps(currentReadAt, latest.createdAt) >= 0) continue;
@@ -442,6 +446,7 @@ function makeInput(label, value = "", type = "text") {
   input.addEventListener("input", () => {
     row.classList.toggle("has-value", input.value.length > 0);
   });
+  attachBlockCursor(input);
 
   return { row, input };
 }
@@ -452,19 +457,20 @@ function attachBlockCursor(input) {
   cursor.className = "block-cursor";
   cursor.textContent = "█";
   cursor.setAttribute("aria-hidden", "true");
-  prompt.classList.add("chat-prompt");
+  prompt.classList.add("input-prompt");
   prompt.append(cursor);
 
   let frame = 0;
-  const context = document.createElement("canvas").getContext("2d");
   const updatePosition = () => {
     if (frame) return;
     frame = window.requestAnimationFrame(() => {
       frame = 0;
       if (document.activeElement !== input) return;
       const selection = input.selectionStart ?? input.value.length;
-      if (context) context.font = window.getComputedStyle(input).font;
-      const textWidth = context?.measureText(input.value.slice(0, selection)).width || 0;
+      if (cursorMeasureContext) {
+        cursorMeasureContext.font = window.getComputedStyle(input).font;
+      }
+      const textWidth = cursorMeasureContext?.measureText(input.value.slice(0, selection)).width || 0;
       cursor.style.left = `${blockCursorOffset(
         input.getBoundingClientRect(),
         prompt.getBoundingClientRect(),
@@ -602,7 +608,6 @@ function showMessagePrompt(name) {
     entry.className = "message-entry";
     const { row, input } = makeInput("", "", "text");
     input.classList.add("chat-input");
-    attachBlockCursor(input);
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Message");
     input.addEventListener("input", () => {
@@ -790,7 +795,7 @@ function showOwnerInterface() {
     name.className = "user-entry-name";
     name.textContent = thread.name;
     entry.append(name);
-    if (threadHasUnread(thread.id)) {
+    if (threadHasUnread(thread)) {
       const unreadDot = document.createElement("span");
       unreadDot.className = "unread-dot";
       unreadDot.setAttribute("aria-label", "Unread messages");
@@ -910,7 +915,6 @@ function showOwnerInterface() {
     reply.className = "owner-reply-composer";
     const { row, input } = makeInput("", "", "text");
     input.classList.add("chat-input");
-    attachBlockCursor(input);
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
     input.addEventListener("input", () => {
@@ -1099,6 +1103,7 @@ async function handleAuthChange(user) {
 async function boot() {
   await startup();
   window.addEventListener("resize", () => activeCursorUpdater?.());
+  void document.fonts?.ready.then(() => activeCursorUpdater?.());
   document.addEventListener("focusin", (event) => {
     if (isAllowedFocusTarget(event.target)) return;
     event.target.blur?.();

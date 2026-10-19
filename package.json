@@ -13,8 +13,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.3.0",
-    "firebase": "^13.0.0"
+    "firebase": "^13.0.0",
+    "hack-font": "^3.3.0"
   },
   "devDependencies": {
     "vite": "^8.3.4"
