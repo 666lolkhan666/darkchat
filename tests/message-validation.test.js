@@ -17,7 +17,8 @@ import {
 import {
   isAllowedFocusTarget,
   isAllowedTextInput,
-  blockCursorOffset
+  blockCursorOffset,
+  insertionPoint
 } from "../src/services/input-policy.js";
 
 test("trims message names and text", () => {
@@ -135,12 +136,30 @@ test("allows text entry only in enabled app inputs", () => {
   assert.equal(isAllowedTextInput(makeInput({ disabled: true })), false);
   assert.equal(isAllowedTextInput(makeInput({ readOnly: true })), false);
   assert.equal(isAllowedTextInput({ tagName: "DIV", isContentEditable: true }), false);
+  assert.equal(isAllowedTextInput({
+    tagName: "TEXTAREA",
+    dataset: { chatInput: "true" },
+    disabled: false,
+    readOnly: false
+  }), true);
+  assert.equal(isAllowedTextInput({
+    tagName: "TEXTAREA",
+    dataset: {},
+    disabled: false,
+    readOnly: false
+  }), false);
 });
 
 test("focus is limited to app inputs and interactive controls", () => {
   assert.equal(isAllowedFocusTarget({
     tagName: "INPUT",
     type: "password",
+    dataset: { chatInput: "true" },
+    disabled: false,
+    readOnly: false
+  }), true);
+  assert.equal(isAllowedFocusTarget({
+    tagName: "TEXTAREA",
     dataset: { chatInput: "true" },
     disabled: false,
     readOnly: false
@@ -155,4 +174,18 @@ test("positions the block cursor relative to its chat prompt", () => {
     blockCursorOffset({ left: 120 }, { left: 100 }, 36, 4),
     52
   );
+});
+
+test("tracks the caret at the active end of a selection", () => {
+  const input = {
+    value: "hello",
+    selectionStart: 1,
+    selectionEnd: 4,
+    selectionDirection: "forward"
+  };
+  assert.equal(insertionPoint(input), 4);
+  input.selectionDirection = "backward";
+  assert.equal(insertionPoint(input), 1);
+  input.selectionDirection = "none";
+  assert.equal(insertionPoint(input), 4);
 });

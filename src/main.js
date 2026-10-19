@@ -37,6 +37,7 @@ import {
 } from "./services/visitor-names.js";
 import {
   blockCursorOffset,
+  insertionPoint,
   isAllowedFocusTarget,
   isAllowedTextInput
 } from "./services/input-policy.js";
@@ -55,6 +56,8 @@ let stopVisitorAccountWatch = null;
 let inactivityTimer = null;
 let typingTimer = null;
 let typingExpiryTimer = null;
+let typingWriteQueue = Promise.resolve();
+let lastTypingWriteAt = 0;
 let typingWatchGeneration = 0;
 let messageWatchGeneration = 0;
 let messages = [];
@@ -121,15 +124,32 @@ function refreshTypingIndicator() {
   const dots = isOwner ? ownerTypingDots : visitorTypingDots;
   if (!label || !dots) return;
 
-  const updatedAt = timestampMillis(typingState?.updatedAt);
-  const fresh = !typingError && updatedAt > 0 && Date.now() - updatedAt < 5_000;
-  const otherIsTyping = fresh && (
-    isOwner ? typingState?.visitorTyping === true : typingState?.ownerTyping === true
-  );
+  window.clearTimeout(typingExpiryTimer);
+  typingExpiryTimer = null;
+  const otherRole = isOwner ? "visitor" : "owner";
+  const updatedAt = timestampMillis(typingState?.[`${otherRole}UpdatedAt`]);
+  const age = Date.now() - updatedAt;
+  const otherIsTyping = !typingError &&
+    typingState?.[`${otherRole}Typing`] === true &&
+    updatedAt > 0 && age >= 0 && age < 5_000;
   const otherName = isOwner ? typingOtherName : "Dark";
   label.textContent = otherIsTyping ? `${otherName} is typing` : "";
   label.parentElement.hidden = !otherIsTyping;
   dots.classList.toggle("active", otherIsTyping);
+  if (otherIsTyping) {
+    typingExpiryTimer = window.setTimeout(refreshTypingIndicator, 5_000 - age);
+  }
+}
+
+function publishTypingState(isTyping) {
+  const threadIds = [...activeTypingThreadIds];
+  const sender = activeTypingSender;
+  lastTypingWriteAt = Date.now();
+  typingWriteQueue = typingWriteQueue.then(
+    () => setTypingState(threadIds, sender, isTyping)
+  ).catch((error) => {
+    console.warn("Could not update typing status.", error);
+  });
 }
 
 function clearLocalTyping() {
@@ -137,10 +157,7 @@ function clearLocalTyping() {
   typingTimer = null;
   if (!localTypingActive || !activeTypingThreadId || !activeTypingSender) return;
   localTypingActive = false;
-  void setTypingState(activeTypingThreadIds, activeTypingSender, false).catch((error) => {
-    typingError = error.message || "Could not update typing status.";
-    refreshTypingIndicator();
-  });
+  publishTypingState(false);
 }
 
 function updateLocalTyping(threadId, sender, isTyping) {
@@ -151,10 +168,9 @@ function updateLocalTyping(threadId, sender, isTyping) {
   if (isTyping) {
     if (!localTypingActive) {
       localTypingActive = true;
-      void setTypingState(activeTypingThreadIds, sender, true).catch((error) => {
-        typingError = error.message || "Could not update typing status.";
-        refreshTypingIndicator();
-      });
+      publishTypingState(true);
+    } else if (Date.now() - lastTypingWriteAt >= 1_500) {
+      publishTypingState(true);
     }
     typingTimer = window.setTimeout(clearLocalTyping, 2_000);
     return;
@@ -185,6 +201,7 @@ function watchTypingForThread(
   activeTypingThreadId = threadId;
   activeTypingThreadIds = threadIds;
   activeTypingSender = sender;
+  lastTypingWriteAt = 0;
   typingState = null;
   typingError = "";
   typingOtherName = otherName;
@@ -195,33 +212,29 @@ function watchTypingForThread(
 
   const onTypingStates = (states) => {
     if (watchGeneration !== typingWatchGeneration || activeTypingThreadId !== threadId) return;
-    window.clearTimeout(typingExpiryTimer);
     const now = Date.now();
-    const freshStates = [...states.values()].filter((state) => {
-      const updatedAt = timestampMillis(state?.updatedAt);
-      return updatedAt > 0 && now - updatedAt < 5_000;
-    });
+    const latestTimestamp = (role) => [...states.values()].reduce((latest, state) => {
+      const updatedAt = timestampMillis(state?.[`${role}UpdatedAt`] ?? state?.updatedAt);
+      return state?.[`${role}Typing`] === true && updatedAt > 0 &&
+        now - updatedAt >= 0 && now - updatedAt < 5_000
+        ? Math.max(latest, updatedAt)
+        : latest;
+    }, 0);
+    const visitorUpdatedAt = latestTimestamp("visitor");
+    const ownerUpdatedAt = latestTimestamp("owner");
     typingState = {
-      visitorTyping: freshStates.some((state) => state.visitorTyping === true),
-      ownerTyping: freshStates.some((state) => state.ownerTyping === true),
-      updatedAt: freshStates.reduce((latest, state) =>
-        timestampMillis(state.updatedAt) > timestampMillis(latest)
-          ? state.updatedAt
-          : latest, null)
+      visitorTyping: visitorUpdatedAt > 0,
+      visitorUpdatedAt,
+      ownerTyping: ownerUpdatedAt > 0,
+      ownerUpdatedAt
     };
     typingError = "";
-    const updatedAt = timestampMillis(typingState.updatedAt);
-    const expiresIn = 5_000 - (Date.now() - updatedAt);
-    if (typingState.visitorTyping || typingState.ownerTyping) {
-      if (expiresIn > 0) {
-        typingExpiryTimer = window.setTimeout(refreshTypingIndicator, expiresIn);
-      }
-    }
     refreshTypingIndicator();
   };
   const onTypingError = (error) => {
     if (watchGeneration !== typingWatchGeneration || activeTypingThreadId !== threadId) return;
     typingError = error.message || "Could not load typing status.";
+    console.warn("Could not load typing status.", error);
     refreshTypingIndicator();
   };
   stopTypingWatch = sender === "owner"
@@ -431,14 +444,19 @@ function makeInput(label, value = "", type = "text") {
   labelNode.className = "prompt";
   labelNode.textContent = label;
 
-  const input = document.createElement("input");
+  const isTextarea = type === "textarea";
+  const input = document.createElement(isTextarea ? "textarea" : "input");
   input.className = "terminal-input";
-  input.type = type;
+  if (!isTextarea) input.type = type;
   input.dataset.chatInput = "true";
-  input.autocomplete = type === "password" ? "current-password" : "off";
+  if (!isTextarea) input.autocomplete = type === "password" ? "current-password" : "off";
   input.spellcheck = false;
   input.value = value;
   input.setAttribute("aria-label", label.replace(/:\s*$/, ""));
+  if (isTextarea) {
+    input.rows = 1;
+    input.addEventListener("input", () => resizeComposer(input));
+  }
   labelNode.append(input);
   row.append(labelNode);
 
@@ -450,6 +468,16 @@ function makeInput(label, value = "", type = "text") {
   return { row, input };
 }
 
+function resizeComposer(input) {
+  input.style.height = "auto";
+  const maxHeight = Number.parseFloat(window.getComputedStyle(input).maxHeight);
+  const nextHeight = Number.isFinite(maxHeight)
+    ? Math.min(input.scrollHeight, maxHeight)
+    : input.scrollHeight;
+  input.style.height = `${nextHeight}px`;
+  input.style.overflowY = input.scrollHeight > nextHeight ? "auto" : "hidden";
+}
+
 function attachBlockCursor(input) {
   const prompt = input.parentElement;
   const cursor = document.createElement("span");
@@ -459,34 +487,79 @@ function attachBlockCursor(input) {
   prompt.classList.add("input-prompt");
   prompt.append(cursor);
 
+  const mirror = input.tagName === "TEXTAREA"
+    ? document.createElement("div")
+    : null;
+  const marker = mirror ? document.createElement("span") : null;
+  if (mirror && marker) {
+    mirror.setAttribute("aria-hidden", "true");
+    mirror.style.cssText = [
+      "position:fixed",
+      "top:0",
+      "left:-10000px",
+      "visibility:hidden",
+      "pointer-events:none",
+      "overflow:hidden",
+      "height:auto",
+      "min-height:0",
+      "max-height:none",
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+      "word-break:break-word"
+    ].join(";");
+    marker.textContent = "\u200b";
+    mirror.append(marker);
+    prompt.append(mirror);
+  }
+
   let frame = 0;
   const updatePosition = () => {
     if (frame) return;
     frame = window.requestAnimationFrame(() => {
       frame = 0;
       if (!input.isConnected) return;
-      const selection = input.selectionStart ?? input.value.length;
+      const selection = insertionPoint(input);
       const inputStyle = window.getComputedStyle(input);
-      if (cursorMeasureContext) {
-        cursorMeasureContext.font = inputStyle.font;
-      }
-      const selectedText = input.value.slice(0, selection);
-      const letterSpacing = Number.parseFloat(inputStyle.letterSpacing) || 0;
-      const textWidth = cursorMeasureContext
-        ? cursorMeasureContext.measureText(selectedText).width +
-          Math.max(0, [...selectedText].length - 1) * letterSpacing
-        : 0;
       const inputRect = input.getBoundingClientRect();
       const promptRect = prompt.getBoundingClientRect();
-      const leftInset = Number.parseFloat(inputStyle.paddingLeft) +
-        Number.parseFloat(inputStyle.borderLeftWidth);
-      cursor.style.left = `${blockCursorOffset(
-        inputRect,
-        promptRect,
-        textWidth + (Number.isFinite(leftInset) ? leftInset : 0),
-        input.scrollLeft
-      )}px`;
-      cursor.style.top = `${inputRect.top - promptRect.top}px`;
+      if (mirror && marker) {
+        const copiedProperties = [
+          "font", "lineHeight", "letterSpacing", "wordSpacing", "textTransform",
+          "textIndent", "textAlign", "paddingTop", "paddingRight", "paddingBottom",
+          "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth",
+          "borderLeftWidth", "boxSizing", "direction", "tabSize"
+        ];
+        for (const property of copiedProperties) {
+          mirror.style[property] = inputStyle[property];
+        }
+        mirror.style.width = `${inputRect.width}px`;
+        const prefix = input.value.slice(0, selection);
+        mirror.replaceChildren(document.createTextNode(prefix), marker);
+        const markerRect = marker.getBoundingClientRect();
+        cursor.style.left = `${markerRect.left - promptRect.left - input.scrollLeft}px`;
+        cursor.style.top = `${markerRect.top - promptRect.top - input.scrollTop}px`;
+      } else {
+        if (cursorMeasureContext) {
+          cursorMeasureContext.font = inputStyle.font;
+        }
+        const selectedText = input.type === "password"
+          ? "•".repeat(selection)
+          : input.value.slice(0, selection);
+        const letterSpacing = Number.parseFloat(inputStyle.letterSpacing) || 0;
+        const textWidth = cursorMeasureContext
+          ? cursorMeasureContext.measureText(selectedText).width +
+            Math.max(0, [...selectedText].length - 1) * letterSpacing
+          : 0;
+        const leftInset = Number.parseFloat(inputStyle.paddingLeft) +
+          Number.parseFloat(inputStyle.borderLeftWidth);
+        cursor.style.left = `${blockCursorOffset(
+          inputRect,
+          promptRect,
+          textWidth + (Number.isFinite(leftInset) ? leftInset : 0),
+          input.scrollLeft
+        )}px`;
+        cursor.style.top = `${inputRect.top - promptRect.top}px`;
+      }
     });
   };
 
@@ -495,7 +568,9 @@ function attachBlockCursor(input) {
     activeCursorUpdater = updatePosition;
     updatePosition();
   });
-  for (const eventName of ["input", "select", "keyup", "click", "pointerup", "scroll", "compositionend"]) {
+  for (const eventName of [
+    "input", "select", "keyup", "click", "pointerup", "scroll", "compositionend"
+  ]) {
     input.addEventListener(eventName, updatePosition);
   }
   updatePosition();
@@ -621,7 +696,7 @@ function showMessagePrompt(name) {
   const addComposer = () => {
     const entry = document.createElement("div");
     entry.className = "message-entry";
-    const { row, input } = makeInput("", "", "text");
+    const { row, input } = makeInput("", "", "textarea");
     input.classList.add("chat-input");
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Message");
@@ -632,10 +707,11 @@ function showMessagePrompt(name) {
     status.setAttribute("role", "status");
     entry.append(row, status);
     app.append(entry);
+    resizeComposer(input);
     focusForDesktop(input);
     row.addEventListener("click", () => input.focus());
     input.addEventListener("keydown", async (event) => {
-      if (event.key !== "Enter") return;
+      if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       const text = input.value.trim();
       if (!text || input.disabled) return;
@@ -784,7 +860,8 @@ function showOwnerInterface() {
     ownerReplyDrafts.set(renderedOwnerThreadId, {
       value: previousReply.value,
       selectionStart: previousReply.selectionStart,
-      selectionEnd: previousReply.selectionEnd
+      selectionEnd: previousReply.selectionEnd,
+      scrollTop: previousReply.scrollTop
     });
   }
   app.replaceChildren();
@@ -957,7 +1034,7 @@ function showOwnerInterface() {
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";
     const draft = ownerReplyDrafts.get(thread.id);
-    const { row, input } = makeInput("", draft?.value || "", "text");
+    const { row, input } = makeInput("", draft?.value || "", "textarea");
     input.classList.add("chat-input");
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
@@ -965,7 +1042,15 @@ function showOwnerInterface() {
       ownerReplyDrafts.set(thread.id, {
         value: input.value,
         selectionStart: input.selectionStart,
-        selectionEnd: input.selectionEnd
+        selectionEnd: input.selectionEnd,
+        scrollTop: input.scrollTop
+      });
+    });
+    input.addEventListener("scroll", () => {
+      const savedDraft = ownerReplyDrafts.get(thread.id);
+      if (savedDraft) ownerReplyDrafts.set(thread.id, {
+        ...savedDraft,
+        scrollTop: input.scrollTop
       });
     });
     input.addEventListener("input", () => {
@@ -981,8 +1066,17 @@ function showOwnerInterface() {
       if (!text || input.disabled) return;
       input.disabled = true;
       updateLocalTyping(thread.id, "owner", false);
+      let timeoutId;
       try {
-        await sendReply(text, [...thread.activeAccounts]);
+        await Promise.race([
+          sendReply(text, [...thread.activeAccounts]),
+          new Promise((_, reject) => {
+            timeoutId = window.setTimeout(
+              () => reject(new Error("No confirmation from Firebase. Delivery is unconfirmed; check your connection before retrying.")),
+              20_000
+            );
+          })
+        ]);
         replyError = "";
         ownerReplyDrafts.delete(thread.id);
         showOwnerInterface();
@@ -992,16 +1086,23 @@ function showOwnerInterface() {
         status.textContent = replyError;
         input.disabled = false;
         input.focus();
+      } finally {
+        window.clearTimeout(timeoutId);
       }
     });
     reply.append(row, status);
     main.append(reply);
+    resizeComposer(input);
     if (draft) {
       input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+      input.scrollTop = draft.scrollTop || 0;
     }
     if (previousReplyFocused && renderedOwnerThreadId === thread.id) {
       input.focus();
-      if (draft) input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+      if (draft) {
+        input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+        input.scrollTop = draft.scrollTop || 0;
+      }
     }
   } else {
     main.append(makeLine("Select a user."));

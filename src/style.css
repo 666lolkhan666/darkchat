@@ -116,6 +116,7 @@ input {
 .line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .input-row {
@@ -162,17 +163,34 @@ input {
   caret-color: transparent;
   color: var(--terminal);
   appearance: none;
+  text-align: left;
+}
+
+.terminal-input[aria-label="Message"],
+.terminal-input[aria-label="Reply"] {
+  display: block;
+  min-height: 1.7em;
+  max-height: min(10.2em, 35dvh);
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.7;
 }
 
 .terminal-input:focus-visible {
   outline: none;
 }
 
-.prompt:has(.terminal-input[aria-label="Message"]) {
+.prompt:has(.terminal-input[aria-label="Message"]),
+.prompt:has(.terminal-input[aria-label="Reply"]) {
   min-width: min(72vw, 560px);
 }
 
-.prompt:has(.terminal-input[aria-label="Message"]) .terminal-input {
+.prompt:has(.terminal-input[aria-label="Message"]) .terminal-input,
+.prompt:has(.terminal-input[aria-label="Reply"]) .terminal-input {
   width: 100%;
 }
 
@@ -250,6 +268,7 @@ input {
   flex: 1;
   width: auto;
   min-width: 0;
+  align-items: stretch;
 }
 
 .message-entry .terminal-input,
@@ -370,6 +389,7 @@ input {
   margin: 0 0 10px;
   color: var(--secondary-text);
   font-size: 0.85em;
+  text-align: left;
 }
 
 .typing-dots {
@@ -490,6 +510,11 @@ input {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .block-cursor {
+    animation: none;
+    opacity: 1;
+  }
+
   .typing-dots span {
     animation: none;
     opacity: 0.7;
