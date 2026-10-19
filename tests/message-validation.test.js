@@ -14,6 +14,10 @@ import {
   compareTimestamps,
   isUnreadVisitorMessage
 } from "../src/services/conversation-state.js";
+import {
+  isAllowedFocusTarget,
+  isAllowedTextInput
+} from "../src/services/input-policy.js";
 
 test("trims message names and text", () => {
   assert.deepEqual(cleanMessage("  MBI  ", "  Hello  "), {
@@ -76,4 +80,35 @@ test("marks only new visitor messages unread", () => {
   );
   assert.equal(isUnreadVisitorMessage({ sender: "user" }, readAt), true);
   assert.equal(compareTimestamps(timestamp(10, 300_000), readAt), 100_000);
+});
+
+test("allows text entry only in enabled app inputs", () => {
+  const makeInput = (overrides = {}) => ({
+    tagName: "INPUT",
+    type: "text",
+    dataset: { chatInput: "true" },
+    disabled: false,
+    readOnly: false,
+    ...overrides
+  });
+
+  assert.equal(isAllowedTextInput(makeInput()), true);
+  assert.equal(isAllowedTextInput(makeInput({ dataset: {} })), false);
+  assert.equal(isAllowedTextInput(makeInput({ type: "email" })), false);
+  assert.equal(isAllowedTextInput(makeInput({ disabled: true })), false);
+  assert.equal(isAllowedTextInput(makeInput({ readOnly: true })), false);
+  assert.equal(isAllowedTextInput({ tagName: "DIV", isContentEditable: true }), false);
+});
+
+test("focus is limited to app inputs and interactive controls", () => {
+  assert.equal(isAllowedFocusTarget({
+    tagName: "INPUT",
+    type: "password",
+    dataset: { chatInput: "true" },
+    disabled: false,
+    readOnly: false
+  }), true);
+  assert.equal(isAllowedFocusTarget({ tagName: "BUTTON", disabled: false }), true);
+  assert.equal(isAllowedFocusTarget({ tagName: "BUTTON", disabled: true }), false);
+  assert.equal(isAllowedFocusTarget({ tagName: "DIV", tabIndex: 0 }), false);
 });

@@ -28,6 +28,7 @@ import {
   isUnreadVisitorMessage
 } from "./services/conversation-state.js";
 import { removeVisitorAccount, reserveVisitorName } from "./services/visitor-names.js";
+import { isAllowedFocusTarget, isAllowedTextInput } from "./services/input-policy.js";
 
 const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
@@ -71,6 +72,7 @@ let visitorTranscript = null;
 let visitorErrorLine = null;
 let lastActivityWrite = 0;
 let storageWarningShown = false;
+let activeCursorUpdater = null;
 
 function timestampMillis(value) {
   return typeof value?.toMillis === "function" ? value.toMillis() : 0;
@@ -386,6 +388,7 @@ function makeInput(label, value = "", type = "text") {
   const input = document.createElement("input");
   input.className = "terminal-input";
   input.type = type;
+  input.dataset.chatInput = "true";
   input.autocomplete = type === "password" ? "current-password" : "off";
   input.spellcheck = false;
   input.value = value;
@@ -398,6 +401,43 @@ function makeInput(label, value = "", type = "text") {
   });
 
   return { row, input };
+}
+
+function attachBlockCursor(input) {
+  const prompt = input.parentElement;
+  const cursor = document.createElement("span");
+  cursor.className = "block-cursor";
+  cursor.textContent = "█";
+  cursor.setAttribute("aria-hidden", "true");
+  prompt.classList.add("chat-prompt");
+  prompt.append(cursor);
+
+  let frame = 0;
+  const context = document.createElement("canvas").getContext("2d");
+  const updatePosition = () => {
+    if (frame) return;
+    frame = window.requestAnimationFrame(() => {
+      frame = 0;
+      if (document.activeElement !== input) return;
+      const selection = input.selectionStart ?? input.value.length;
+      context.font = window.getComputedStyle(input).font;
+      const textWidth = context.measureText(input.value.slice(0, selection)).width;
+      cursor.style.left = `${input.offsetLeft + textWidth - input.scrollLeft}px`;
+    });
+  };
+
+  input.addEventListener("focus", () => {
+    activeCursorUpdater = updatePosition;
+    updatePosition();
+  });
+  input.addEventListener("blur", () => {
+    if (frame) window.cancelAnimationFrame(frame);
+    frame = 0;
+    if (activeCursorUpdater === updatePosition) activeCursorUpdater = null;
+  });
+  for (const eventName of ["input", "select", "keyup", "click", "scroll"]) {
+    input.addEventListener(eventName, updatePosition);
+  }
 }
 
 async function startup() {
@@ -416,16 +456,12 @@ async function startup() {
   for (const text of lines) {
     const line = makeLine();
     const content = document.createTextNode("");
-    const cursor = document.createElement("span");
-    cursor.className = "cursor startup-cursor";
-    cursor.setAttribute("aria-hidden", "true");
-    line.append(content, cursor);
+    line.append(content);
     output.append(line);
     for (const character of text) {
       content.data += character;
       await pause(8);
     }
-    cursor.remove();
     await pause(text.startsWith("Initialization") ? 100 : 75);
   }
   app.className = "";
@@ -503,6 +539,8 @@ function showMessagePrompt(name) {
     const entry = document.createElement("div");
     entry.className = "message-entry";
     const { row, input } = makeInput("", "", "text");
+    input.classList.add("chat-input");
+    attachBlockCursor(input);
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Message");
     input.addEventListener("input", () => {
@@ -788,6 +826,8 @@ function showOwnerInterface() {
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";
     const { row, input } = makeInput("", "", "text");
+    input.classList.add("chat-input");
+    attachBlockCursor(input);
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
     input.addEventListener("input", () => {
@@ -949,6 +989,22 @@ async function handleAuthChange(user) {
 
 async function boot() {
   await startup();
+  window.addEventListener("resize", () => activeCursorUpdater?.());
+  document.addEventListener("focusin", (event) => {
+    if (isAllowedFocusTarget(event.target)) return;
+    event.target.blur?.();
+  });
+  for (const eventName of ["beforeinput", "paste", "drop"]) {
+    document.addEventListener(eventName, (event) => {
+      if (!isAllowedTextInput(event.target)) event.preventDefault();
+    }, true);
+  }
+  document.addEventListener("keydown", (event) => {
+    if (isAllowedTextInput(event.target)) return;
+    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+    }
+  }, true);
   for (const eventName of ["pointerdown", "keydown", "input", "touchstart", "scroll"]) {
     document.addEventListener(eventName, recordVisitorActivity, { passive: true });
   }

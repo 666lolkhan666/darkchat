@@ -109,14 +109,29 @@ input {
   opacity: 0.65;
 }
 
-.cursor {
+.block-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: inline-block;
-  width: 0.6em;
-  height: 1.05em;
-  margin-left: 0.1em;
-  background: #e7e7e7;
-  vertical-align: -0.14em;
-  animation: blink 1s steps(2, start) infinite;
+  visibility: hidden;
+  pointer-events: none;
+  color: #e7e7e7;
+  line-height: inherit;
+  animation: none;
+}
+
+.chat-prompt {
+  position: relative;
+}
+
+.chat-input:focus {
+  caret-color: transparent;
+}
+
+.chat-input:focus + .block-cursor {
+  visibility: visible;
+  animation: block-cursor-blink 1s steps(2, start) infinite;
 }
 
 .status {
@@ -354,9 +369,9 @@ input {
   text-align: left;
 }
 
-@keyframes blink {
+@keyframes block-cursor-blink {
   to {
-    opacity: 0.3;
+    opacity: 0.25;
   }
 }
 
