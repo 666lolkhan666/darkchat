@@ -89,6 +89,10 @@ let visitorErrorLine = null;
 let lastActivityWrite = 0;
 let storageWarningShown = false;
 let activeCursorUpdater = null;
+let visitorFollowLatest = true;
+const ownerTranscriptStates = new Map();
+const ownerReplyDrafts = new Map();
+let renderedOwnerThreadId = "";
 
 function timestampMillis(value) {
   return typeof value?.toMillis === "function" ? value.toMillis() : 0;
@@ -421,7 +425,7 @@ function makeLine(text = "", className = "") {
 
 function makeInput(label, value = "", type = "text") {
   const row = document.createElement("div");
-  row.className = "input-row";
+  row.className = `input-row${label === "whats your name ?" ? " name-prompt-row" : ""}`;
 
   const labelNode = document.createElement("label");
   labelNode.className = "prompt";
@@ -460,29 +464,38 @@ function attachBlockCursor(input) {
     if (frame) return;
     frame = window.requestAnimationFrame(() => {
       frame = 0;
+      if (!input.isConnected) return;
       const selection = input.selectionStart ?? input.value.length;
+      const inputStyle = window.getComputedStyle(input);
       if (cursorMeasureContext) {
-        cursorMeasureContext.font = window.getComputedStyle(input).font;
+        cursorMeasureContext.font = inputStyle.font;
       }
-      const textWidth = cursorMeasureContext?.measureText(input.value.slice(0, selection)).width || 0;
+      const selectedText = input.value.slice(0, selection);
+      const letterSpacing = Number.parseFloat(inputStyle.letterSpacing) || 0;
+      const textWidth = cursorMeasureContext
+        ? cursorMeasureContext.measureText(selectedText).width +
+          Math.max(0, [...selectedText].length - 1) * letterSpacing
+        : 0;
+      const inputRect = input.getBoundingClientRect();
+      const promptRect = prompt.getBoundingClientRect();
+      const leftInset = Number.parseFloat(inputStyle.paddingLeft) +
+        Number.parseFloat(inputStyle.borderLeftWidth);
       cursor.style.left = `${blockCursorOffset(
-        input.getBoundingClientRect(),
-        prompt.getBoundingClientRect(),
-        textWidth,
+        inputRect,
+        promptRect,
+        textWidth + (Number.isFinite(leftInset) ? leftInset : 0),
         input.scrollLeft
       )}px`;
+      cursor.style.top = `${inputRect.top - promptRect.top}px`;
     });
   };
 
+  activeCursorUpdater = updatePosition;
   input.addEventListener("focus", () => {
     activeCursorUpdater = updatePosition;
     updatePosition();
   });
-  input.addEventListener("blur", () => {
-    if (activeCursorUpdater === updatePosition) activeCursorUpdater = null;
-    updatePosition();
-  });
-  for (const eventName of ["input", "select", "keyup", "click", "scroll"]) {
+  for (const eventName of ["input", "select", "keyup", "click", "pointerup", "scroll", "compositionend"]) {
     input.addEventListener(eventName, updatePosition);
   }
   updatePosition();
@@ -573,15 +586,23 @@ function showNamePrompt(errorText = "") {
   });
 }
 
+function isAtLatest(container) {
+  return container.scrollHeight - container.scrollTop - container.clientHeight <= 48;
+}
+
 function showMessagePrompt(name) {
   currentVisitorName = name;
+  visitorFollowLatest = true;
   app.replaceChildren();
-  app.className = "terminal";
+  app.className = "terminal visitor-chat";
   app.append(makeLine("olny way to the dark"));
 
   visitorTranscript = document.createElement("div");
   visitorTranscript.className = "visitor-transcript";
   visitorTranscript.setAttribute("aria-live", "polite");
+  visitorTranscript.addEventListener("scroll", () => {
+    visitorFollowLatest = isAtLatest(visitorTranscript);
+  });
   const typing = makeTypingIndicator();
   visitorTypingLabel = typing.label;
   visitorTypingDots = typing.dots;
@@ -667,10 +688,12 @@ function createChatMessage(message, threadName = "", showSource = false) {
 
 function renderVisitorTranscript() {
   if (!visitorTranscript) return;
+  const shouldFollow = visitorFollowLatest;
   visitorTranscript.replaceChildren();
   for (const message of visitorMessages) {
     visitorTranscript.append(createChatMessage(message, currentVisitorName));
   }
+  if (shouldFollow) visitorTranscript.scrollTop = visitorTranscript.scrollHeight;
 }
 
 function showOwnerPasswordPrompt() {
@@ -755,6 +778,15 @@ async function ensureVisitorNames(currentMessages) {
 }
 
 function showOwnerInterface() {
+  const previousReply = app.querySelector(".owner-reply-composer .chat-input");
+  const previousReplyFocused = previousReply && document.activeElement === previousReply;
+  if (previousReply && renderedOwnerThreadId && !previousReply.disabled) {
+    ownerReplyDrafts.set(renderedOwnerThreadId, {
+      value: previousReply.value,
+      selectionStart: previousReply.selectionStart,
+      selectionEnd: previousReply.selectionEnd
+    });
+  }
   app.replaceChildren();
   app.className = `owner-layout${sidebarOpen ? "" : " sidebar-closed"}`;
 
@@ -891,6 +923,22 @@ function showOwnerInterface() {
     for (const message of currentMessages) {
       transcript.append(createChatMessage(message, thread.name, true));
     }
+    const transcriptState = ownerTranscriptStates.get(thread.id) || {
+      scrollTop: 0,
+      followLatest: true
+    };
+    transcript.addEventListener("scroll", () => {
+      ownerTranscriptStates.set(thread.id, {
+        scrollTop: transcript.scrollTop,
+        followLatest: isAtLatest(transcript)
+      });
+    });
+    window.requestAnimationFrame(() => {
+      if (!transcript.isConnected) return;
+      transcript.scrollTop = transcriptState.followLatest
+        ? transcript.scrollHeight
+        : transcriptState.scrollTop;
+    });
     main.append(transcript);
 
     if (!thread.activeAccounts.size) {
@@ -902,15 +950,24 @@ function showOwnerInterface() {
       }
       if (ownerNotice) main.append(makeLine(ownerNotice, "status"));
       app.append(sidebar, main);
+      renderedOwnerThreadId = thread.id;
       return;
     }
 
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";
-    const { row, input } = makeInput("", "", "text");
+    const draft = ownerReplyDrafts.get(thread.id);
+    const { row, input } = makeInput("", draft?.value || "", "text");
     input.classList.add("chat-input");
     input.maxLength = MAX_MESSAGE_LENGTH;
     input.setAttribute("aria-label", "Reply");
+    input.addEventListener("input", () => {
+      ownerReplyDrafts.set(thread.id, {
+        value: input.value,
+        selectionStart: input.selectionStart,
+        selectionEnd: input.selectionEnd
+      });
+    });
     input.addEventListener("input", () => {
       updateLocalTyping(thread.id, "owner", Boolean(input.value.trim()));
     });
@@ -927,6 +984,7 @@ function showOwnerInterface() {
       try {
         await sendReply(text, [...thread.activeAccounts]);
         replyError = "";
+        ownerReplyDrafts.delete(thread.id);
         showOwnerInterface();
       } catch (error) {
         replyError = error.message || "Reply could not be sent.";
@@ -938,6 +996,13 @@ function showOwnerInterface() {
     });
     reply.append(row, status);
     main.append(reply);
+    if (draft) {
+      input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+    }
+    if (previousReplyFocused && renderedOwnerThreadId === thread.id) {
+      input.focus();
+      if (draft) input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+    }
   } else {
     main.append(makeLine("Select a user."));
   }
@@ -948,6 +1013,7 @@ function showOwnerInterface() {
   }
   if (ownerNotice) main.append(makeLine(ownerNotice, "status"));
   app.append(sidebar, main);
+  renderedOwnerThreadId = thread?.id || "";
 }
 
 function startMessageListener(isOwner, threadId) {
@@ -1096,8 +1162,24 @@ async function handleAuthChange(user) {
 
 async function boot() {
   await startup();
-  window.addEventListener("resize", () => activeCursorUpdater?.());
+  const updateViewportLayout = () => {
+    activeCursorUpdater?.();
+    if (visitorTranscript && visitorFollowLatest) {
+      visitorTranscript.scrollTop = visitorTranscript.scrollHeight;
+    }
+    const ownerTranscript = app.querySelector(".owner-transcript");
+    const ownerState = ownerTranscriptStates.get(renderedOwnerThreadId);
+    if (ownerTranscript && (ownerState?.followLatest ?? true)) {
+      ownerTranscript.scrollTop = ownerTranscript.scrollHeight;
+    }
+  };
+  window.addEventListener("resize", updateViewportLayout);
+  window.visualViewport?.addEventListener("resize", updateViewportLayout);
+  window.visualViewport?.addEventListener("scroll", updateViewportLayout);
   void document.fonts?.ready.then(() => activeCursorUpdater?.());
+  document.addEventListener("selectionchange", () => {
+    if (document.activeElement?.dataset?.chatInput === "true") activeCursorUpdater?.();
+  });
   document.addEventListener("focusin", (event) => {
     if (isAllowedFocusTarget(event.target)) return;
     event.target.blur?.();
