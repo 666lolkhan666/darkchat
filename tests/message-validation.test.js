@@ -6,9 +6,7 @@ import {
   MAX_NAME_LENGTH
 } from "../src/services/message-validation.js";
 import {
-  normalizeVisitorName,
-  numberedVisitorName,
-  visitorNameKey
+  prepareVisitorName
 } from "../src/services/visitor-names.js";
 import {
   compareTimestamps,
@@ -16,7 +14,8 @@ import {
 } from "../src/services/conversation-state.js";
 import {
   isAllowedFocusTarget,
-  isAllowedTextInput
+  isAllowedTextInput,
+  blockCursorOffset
 } from "../src/services/input-policy.js";
 
 test("trims message names and text", () => {
@@ -48,15 +47,11 @@ test("rejects values exceeding their configured limits", () => {
   );
 });
 
-test("normalizes names consistently for unique reservations", () => {
-  assert.equal(normalizeVisitorName("  Dark   Chat "), "dark chat");
-  assert.equal(visitorNameKey(" DArk/Chat "), "dark／chat");
-});
-
-test("numbers duplicate names and keeps generated names within the limit", () => {
-  assert.equal(numberedVisitorName("Dark", 1), "Dark");
-  assert.equal(numberedVisitorName("Dark", 2), "Dark 2");
-  assert.equal(numberedVisitorName("n".repeat(100), 123).length, 100);
+test("preserves the visitor's chosen display name without adding a suffix", () => {
+  assert.equal(prepareVisitorName("  My Name  "), "My Name");
+  assert.equal(prepareVisitorName(" A  Name "), "A  Name");
+  assert.throws(() => prepareVisitorName(" "), /Name must be between/);
+  assert.throws(() => prepareVisitorName("n".repeat(MAX_NAME_LENGTH + 1)), /Name must be between/);
 });
 
 test("marks only new visitor messages unread", () => {
@@ -111,4 +106,11 @@ test("focus is limited to app inputs and interactive controls", () => {
   assert.equal(isAllowedFocusTarget({ tagName: "BUTTON", disabled: false }), true);
   assert.equal(isAllowedFocusTarget({ tagName: "BUTTON", disabled: true }), false);
   assert.equal(isAllowedFocusTarget({ tagName: "DIV", tabIndex: 0 }), false);
+});
+
+test("positions the block cursor relative to its chat prompt", () => {
+  assert.equal(
+    blockCursorOffset({ left: 120 }, { left: 100 }, 36, 4),
+    52
+  );
 });

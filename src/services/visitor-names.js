@@ -15,27 +15,24 @@ import { isFirebaseConfigured, ownerUid } from "../firebase/config.js";
 import { MAX_NAME_LENGTH } from "./message-validation.js";
 
 const profilesCollection = () => collection(database, "visitorNames");
-const reservationsCollection = () => collection(database, "visitorNameKeys");
 const messagesCollection = () => collection(database, "messages");
 const threadReadsCollection = () => collection(database, "threadReads");
 const typingStatesCollection = () => collection(database, "typingStates");
 
-export function normalizeVisitorName(name) {
-  return name.trim().replace(/\s+/gu, " ").toLowerCase();
-}
-
-export function visitorNameKey(name) {
-  return normalizeVisitorName(name).replaceAll("/", "／");
-}
-
-export function numberedVisitorName(baseName, number) {
-  const suffix = number === 1 ? "" : ` ${number}`;
-  let prefix = "";
-  for (const character of baseName) {
-    if (prefix.length + character.length > MAX_NAME_LENGTH - suffix.length) break;
-    prefix += character;
+export function prepareVisitorName(name) {
+  if (typeof name !== "string") {
+    throw new Error(`Name must be between 1 and ${MAX_NAME_LENGTH} characters.`);
   }
-  return `${prefix.trimEnd()}${suffix}`;
+  const displayName = name.trim();
+  if (
+    !displayName ||
+    displayName.length > MAX_NAME_LENGTH ||
+    displayName === "." ||
+    displayName === ".."
+  ) {
+    throw new Error(`Name must be between 1 and ${MAX_NAME_LENGTH} characters.`);
+  }
+  return displayName;
 }
 
 function requireDatabase() {
@@ -46,10 +43,7 @@ function requireDatabase() {
 
 export async function reserveVisitorName(requestedName, uid) {
   requireDatabase();
-  const baseName = requestedName.trim().replace(/\s+/gu, " ");
-  if (!baseName || baseName.length > MAX_NAME_LENGTH || baseName === "." || baseName === "..") {
-    throw new Error(`Name must be between 1 and ${MAX_NAME_LENGTH} characters.`);
-  }
+  const baseName = prepareVisitorName(requestedName);
   if (
     !uid ||
     uid === ownerUid ||
@@ -65,37 +59,27 @@ export async function reserveVisitorName(requestedName, uid) {
       if (!profile.data().active) {
         throw new Error("This account was removed from chat. Its name remains reserved; contact the owner for access.");
       }
-      return { name: profile.data().name, renamed: profile.data().name !== baseName };
-    }
-
-    for (let number = 1; number <= 1000; number += 1) {
-      const candidate = numberedVisitorName(baseName, number);
-      const key = visitorNameKey(candidate);
-      const reservationRef = doc(reservationsCollection(), key);
-      const reservation = await transaction.get(reservationRef);
-
-      if (!reservation.exists()) {
-        transaction.set(profileRef, {
-          name: candidate,
-          baseName,
-          number,
-          nameKey: key,
-          uid,
-          active: true,
-          createdAt: serverTimestamp()
+      const savedName = profile.data().baseName || profile.data().name || baseName;
+      if (profile.data().name !== savedName || profile.data().nameKey !== uid) {
+        transaction.update(profileRef, {
+          name: savedName,
+          number: 1,
+          nameKey: uid
         });
-        transaction.set(reservationRef, {
-          name: candidate,
-          baseName,
-          number,
-          uid,
-          createdAt: serverTimestamp()
-        });
-        return { name: candidate, renamed: number > 1 };
       }
+      return { name: savedName };
     }
 
-    throw new Error("Could not assign a unique name. Please choose another name.");
+    transaction.set(profileRef, {
+      name: baseName,
+      baseName,
+      number: 1,
+      nameKey: uid,
+      uid,
+      active: true,
+      createdAt: serverTimestamp()
+    });
+    return { name: baseName };
   });
 }
 

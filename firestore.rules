@@ -69,39 +69,35 @@ service cloud.firestore {
         && request.resource.data.baseName.size() > 0
         && request.resource.data.baseName.size() <= 100
         && request.resource.data.number is int
-        && request.resource.data.number >= 1
+        && request.resource.data.number == 1
         && request.resource.data.nameKey is string
-        && request.resource.data.nameKey.size() > 0
-        && request.resource.data.nameKey.size() <= 300
+        && request.resource.data.nameKey == uid
+        && request.resource.data.baseName == request.resource.data.name
         && request.resource.data.name != '.'
         && request.resource.data.name != '..'
-        && request.resource.data.nameKey == request.resource.data.name
-          .lower()
-          .trim()
-          .replace('\\s+', ' ')
-          .replace('/', '／')
+        && request.resource.data.name == request.resource.data.name.trim()
         && request.resource.data.active == true
-        && request.resource.data.createdAt == request.time
-        && existsAfter(
-          /databases/$(database)/documents/visitorNameKeys/$(request.resource.data.nameKey)
-        )
-        && getAfter(
-          /databases/$(database)/documents/visitorNameKeys/$(request.resource.data.nameKey)
-        ).data.name == request.resource.data.name
-        && getAfter(
-          /databases/$(database)/documents/visitorNameKeys/$(request.resource.data.nameKey)
-        ).data.baseName == request.resource.data.baseName
-        && getAfter(
-          /databases/$(database)/documents/visitorNameKeys/$(request.resource.data.nameKey)
-        ).data.number == request.resource.data.number
-        && getAfter(
-          /databases/$(database)/documents/visitorNameKeys/$(request.resource.data.nameKey)
-        ).data.uid == uid;
+        && request.resource.data.createdAt == request.time;
 
-      allow update: if isOwner()
-        && resource.data.active == true
-        && request.resource.data.active == false
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active']);
+      allow update: if (
+          isOwner()
+          && resource.data.active == true
+          && request.resource.data.active == false
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
+        )
+        || (
+          request.auth != null
+          && (isOwner() || request.auth.uid == uid)
+          && resource.data.active == true
+          && request.resource.data.active == true
+          && request.resource.data.uid == uid
+          && request.resource.data.baseName == resource.data.baseName
+          && request.resource.data.name == resource.data.baseName
+          && request.resource.data.number == 1
+          && request.resource.data.nameKey == uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'number', 'nameKey'])
+        );
       allow delete: if isOwner();
     }
 

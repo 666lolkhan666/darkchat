@@ -27,8 +27,16 @@ import {
   compareTimestamps,
   isUnreadVisitorMessage
 } from "./services/conversation-state.js";
-import { removeVisitorAccount, reserveVisitorName } from "./services/visitor-names.js";
-import { isAllowedFocusTarget, isAllowedTextInput } from "./services/input-policy.js";
+import {
+  prepareVisitorName,
+  removeVisitorAccount,
+  reserveVisitorName
+} from "./services/visitor-names.js";
+import {
+  blockCursorOffset,
+  isAllowedFocusTarget,
+  isAllowedTextInput
+} from "./services/input-policy.js";
 
 const app = document.querySelector("#app");
 const ownerTitle = '✿ㅤ"MʙɪㅤDᴀʀᴋ"';
@@ -420,9 +428,14 @@ function attachBlockCursor(input) {
       frame = 0;
       if (document.activeElement !== input) return;
       const selection = input.selectionStart ?? input.value.length;
-      context.font = window.getComputedStyle(input).font;
-      const textWidth = context.measureText(input.value.slice(0, selection)).width;
-      cursor.style.left = `${input.offsetLeft + textWidth - input.scrollLeft}px`;
+      if (context) context.font = window.getComputedStyle(input).font;
+      const textWidth = context?.measureText(input.value.slice(0, selection)).width || 0;
+      cursor.style.left = `${blockCursorOffset(
+        input.getBoundingClientRect(),
+        prompt.getBoundingClientRect(),
+        textWidth,
+        input.scrollLeft
+      )}px`;
     });
   };
 
@@ -481,8 +494,14 @@ function showNamePrompt(errorText = "") {
   input.addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    const name = input.value.trim();
-    if (!name) return;
+    let name;
+    try {
+      name = prepareVisitorName(input.value);
+    } catch (error) {
+      status.className = "line error";
+      status.textContent = error.message;
+      return;
+    }
     if (name.replace(/\s+/g, " ").toUpperCase() === "MBI DARK") {
       showOwnerPasswordPrompt();
       return;
@@ -498,10 +517,6 @@ function showNamePrompt(errorText = "") {
       saveVisitorName(assignment.name);
       showMessagePrompt(assignment.name);
       startMessageListener(false, visitorUid);
-      if (assignment.renamed) {
-        visitorErrorLine.className = "line status";
-        visitorErrorLine.textContent = `That name was in use. Your name is ${assignment.name}.`;
-      }
     } catch (error) {
       status.className = "line error";
       status.textContent = error.message || "Could not reserve that name.";
@@ -726,6 +741,8 @@ function showOwnerInterface() {
     const entry = document.createElement("button");
     entry.className = `text-control user-entry${selectedThreadId === thread.id ? " selected" : ""}`;
     entry.type = "button";
+    entry.title = `Account ${thread.id}`;
+    entry.setAttribute("aria-label", `${thread.name}, account ${thread.id}`);
     const name = document.createElement("span");
     name.className = "user-entry-name";
     name.textContent = thread.name;
@@ -963,10 +980,6 @@ async function handleAuthChange(user) {
         saveVisitorName(assignment.name);
         showMessagePrompt(assignment.name);
         startMessageListener(false, user.uid);
-        if (assignment.renamed) {
-          visitorErrorLine.className = "line status";
-          visitorErrorLine.textContent = `That name was in use. Your name is ${assignment.name}.`;
-        }
       } catch (error) {
         if (lastAuthUid === user.uid) showNamePrompt(error.message || "Could not reserve that name.");
       }

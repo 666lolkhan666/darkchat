@@ -1,5 +1,9 @@
 const textInputTypes = new Set(["text", "password"]);
 
+export function blockCursorOffset(inputRect, promptRect, textWidth, scrollLeft) {
+  return inputRect.left - promptRect.left + textWidth - scrollLeft;
+}
+
 export function isAllowedTextInput(target) {
   return target?.tagName === "INPUT" &&
     target.dataset?.chatInput === "true" &&
