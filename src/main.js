@@ -117,19 +117,14 @@ function refreshTypingIndicator() {
   const dots = isOwner ? ownerTypingDots : visitorTypingDots;
   if (!label || !dots) return;
 
-  if (typingError) {
-    label.textContent = "Typing status unavailable.";
-    dots.classList.remove("active");
-    return;
-  }
-
   const updatedAt = timestampMillis(typingState?.updatedAt);
-  const fresh = updatedAt > 0 && Date.now() - updatedAt < 5_000;
+  const fresh = !typingError && updatedAt > 0 && Date.now() - updatedAt < 5_000;
   const otherIsTyping = fresh && (
     isOwner ? typingState?.visitorTyping === true : typingState?.ownerTyping === true
   );
   const otherName = isOwner ? typingOtherName : "Dark";
-  label.textContent = `${otherName} is ${otherIsTyping ? "typing" : "not typing"}`;
+  label.textContent = otherIsTyping ? `${otherName} is typing` : "";
+  label.parentElement.hidden = !otherIsTyping;
   dots.classList.toggle("active", otherIsTyping);
 }
 
@@ -465,7 +460,6 @@ function attachBlockCursor(input) {
     if (frame) return;
     frame = window.requestAnimationFrame(() => {
       frame = 0;
-      if (document.activeElement !== input) return;
       const selection = input.selectionStart ?? input.value.length;
       if (cursorMeasureContext) {
         cursorMeasureContext.font = window.getComputedStyle(input).font;
@@ -485,13 +479,13 @@ function attachBlockCursor(input) {
     updatePosition();
   });
   input.addEventListener("blur", () => {
-    if (frame) window.cancelAnimationFrame(frame);
-    frame = 0;
     if (activeCursorUpdater === updatePosition) activeCursorUpdater = null;
+    updatePosition();
   });
   for (const eventName of ["input", "select", "keyup", "click", "scroll"]) {
     input.addEventListener(eventName, updatePosition);
   }
+  updatePosition();
 }
 
 async function startup() {
