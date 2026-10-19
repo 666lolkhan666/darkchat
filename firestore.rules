@@ -75,7 +75,6 @@ service cloud.firestore {
         && request.resource.data.baseName == request.resource.data.name
         && request.resource.data.name != '.'
         && request.resource.data.name != '..'
-        && request.resource.data.name == request.resource.data.name.trim()
         && request.resource.data.active == true
         && request.resource.data.createdAt == request.time;
 
