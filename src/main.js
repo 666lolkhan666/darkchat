@@ -17,7 +17,8 @@ import {
   setTypingState,
   watchMessages,
   watchThreadReads,
-  watchTypingState
+  watchTypingState,
+  watchTypingStates
 } from "./services/messages.js";
 import {
   MAX_MESSAGE_LENGTH,
@@ -25,12 +26,14 @@ import {
 } from "./services/message-validation.js";
 import {
   compareTimestamps,
+  groupMessagesByName,
   isUnreadVisitorMessage
 } from "./services/conversation-state.js";
 import {
   prepareVisitorName,
-  removeVisitorAccount,
-  reserveVisitorName
+  removeVisitorAccounts,
+  reserveVisitorName,
+  watchVisitorAccount
 } from "./services/visitor-names.js";
 import {
   blockCursorOffset,
@@ -47,19 +50,23 @@ let stopSessionWatch = null;
 let stopMessagesWatch = null;
 let stopThreadReadsWatch = null;
 let stopTypingWatch = null;
+let stopVisitorAccountWatch = null;
 let inactivityTimer = null;
 let typingTimer = null;
 let typingExpiryTimer = null;
+let typingWatchGeneration = 0;
 let messageWatchGeneration = 0;
 let messages = [];
 let visitorMessages = [];
 const visitorNamesByUid = new Map();
+const visitorActiveByUid = new Map();
 const visitorNameReservationPromises = new Map();
 const threadReadAtByUid = new Map();
 let visitorUid = "";
 let currentVisitorName = "";
 let selectedThreadId = "";
 let activeTypingThreadId = "";
+let activeTypingThreadIds = [];
 let activeTypingSender = "";
 let localTypingActive = false;
 let typingState = null;
@@ -130,7 +137,7 @@ function clearLocalTyping() {
   typingTimer = null;
   if (!localTypingActive || !activeTypingThreadId || !activeTypingSender) return;
   localTypingActive = false;
-  void setTypingState(activeTypingThreadId, activeTypingSender, false).catch((error) => {
+  void setTypingState(activeTypingThreadIds, activeTypingSender, false).catch((error) => {
     typingError = error.message || "Could not update typing status.";
     refreshTypingIndicator();
   });
@@ -144,7 +151,7 @@ function updateLocalTyping(threadId, sender, isTyping) {
   if (isTyping) {
     if (!localTypingActive) {
       localTypingActive = true;
-      void setTypingState(threadId, sender, true).catch((error) => {
+      void setTypingState(activeTypingThreadIds, sender, true).catch((error) => {
         typingError = error.message || "Could not update typing status.";
         refreshTypingIndicator();
       });
@@ -155,8 +162,15 @@ function updateLocalTyping(threadId, sender, isTyping) {
   clearLocalTyping();
 }
 
-function watchTypingForThread(threadId, sender, otherName = sender === "owner" ? "Visitor" : "Dark") {
-  if (activeTypingThreadId === threadId && activeTypingSender === sender) {
+function watchTypingForThread(
+  threadId,
+  sender,
+  otherName = sender === "owner" ? "Visitor" : "Dark",
+  threadIds = threadId ? [threadId] : []
+) {
+  const sameThreadIds = activeTypingThreadIds.length === threadIds.length
+    && activeTypingThreadIds.every((uid, index) => uid === threadIds[index]);
+  if (activeTypingThreadId === threadId && activeTypingSender === sender && sameThreadIds) {
     typingOtherName = otherName;
     refreshTypingIndicator();
     return;
@@ -167,7 +181,9 @@ function watchTypingForThread(threadId, sender, otherName = sender === "owner" ?
   typingExpiryTimer = null;
   stopTypingWatch?.();
   stopTypingWatch = null;
+  const watchGeneration = ++typingWatchGeneration;
   activeTypingThreadId = threadId;
+  activeTypingThreadIds = threadIds;
   activeTypingSender = sender;
   typingState = null;
   typingError = "";
@@ -177,28 +193,44 @@ function watchTypingForThread(threadId, sender, otherName = sender === "owner" ?
     return;
   }
 
-  stopTypingWatch = watchTypingState(
-    threadId,
-    (state) => {
-      if (activeTypingThreadId !== threadId) return;
-      window.clearTimeout(typingExpiryTimer);
-      typingState = state;
-      typingError = "";
+  const onTypingStates = (states) => {
+    if (watchGeneration !== typingWatchGeneration || activeTypingThreadId !== threadId) return;
+    window.clearTimeout(typingExpiryTimer);
+    const now = Date.now();
+    const freshStates = [...states.values()].filter((state) => {
       const updatedAt = timestampMillis(state?.updatedAt);
-      const expiresIn = 5_000 - (Date.now() - updatedAt);
-      if (state?.visitorTyping || state?.ownerTyping) {
-        if (expiresIn > 0) {
-          typingExpiryTimer = window.setTimeout(refreshTypingIndicator, expiresIn);
-        }
+      return updatedAt > 0 && now - updatedAt < 5_000;
+    });
+    typingState = {
+      visitorTyping: freshStates.some((state) => state.visitorTyping === true),
+      ownerTyping: freshStates.some((state) => state.ownerTyping === true),
+      updatedAt: freshStates.reduce((latest, state) =>
+        timestampMillis(state.updatedAt) > timestampMillis(latest)
+          ? state.updatedAt
+          : latest, null)
+    };
+    typingError = "";
+    const updatedAt = timestampMillis(typingState.updatedAt);
+    const expiresIn = 5_000 - (Date.now() - updatedAt);
+    if (typingState.visitorTyping || typingState.ownerTyping) {
+      if (expiresIn > 0) {
+        typingExpiryTimer = window.setTimeout(refreshTypingIndicator, expiresIn);
       }
-      refreshTypingIndicator();
-    },
-    (error) => {
-      if (activeTypingThreadId !== threadId) return;
-      typingError = error.message || "Could not load typing status.";
-      refreshTypingIndicator();
     }
-  );
+    refreshTypingIndicator();
+  };
+  const onTypingError = (error) => {
+    if (watchGeneration !== typingWatchGeneration || activeTypingThreadId !== threadId) return;
+    typingError = error.message || "Could not load typing status.";
+    refreshTypingIndicator();
+  };
+  stopTypingWatch = sender === "owner"
+    ? watchTypingStates(threadIds, onTypingStates, onTypingError)
+    : watchTypingState(
+      threadId,
+      (state) => onTypingStates(new Map(state ? [[threadId, state]] : [])),
+      onTypingError
+    );
 }
 
 function latestVisitorMessage(threadId) {
@@ -211,34 +243,32 @@ function latestVisitorMessage(threadId) {
 }
 
 function threadHasUnread(threadId) {
-  return messages.some((message) =>
-    message.threadId === threadId &&
-    isUnreadVisitorMessage(message, threadReadAtByUid.get(threadId))
-  );
+  const thread = getThreads().find((item) => item.id === threadId);
+  return Boolean(thread?.messages.some((message) =>
+    isUnreadVisitorMessage(message, threadReadAtByUid.get(message.threadId))
+  ));
 }
 
 async function markThreadAsRead(threadId) {
-  const latest = latestVisitorMessage(threadId);
-  if (!latest?.createdAt) return;
-  const currentReadAt = threadReadAtByUid.get(threadId);
-  if (compareTimestamps(currentReadAt, latest.createdAt) >= 0) return;
+  const thread = getThreads().find((item) => item.id === threadId);
+  if (!thread) return;
+  for (const uid of thread.accounts) {
+    const latest = latestVisitorMessage(uid);
+    if (!latest?.createdAt) continue;
+    const currentReadAt = threadReadAtByUid.get(uid);
+    if (compareTimestamps(currentReadAt, latest.createdAt) >= 0) continue;
 
-  const previousReadAt = currentReadAt;
-  threadReadAtByUid.set(threadId, latest.createdAt);
-  try {
-    await markThreadRead(threadId, latest.createdAt);
-    if (ownerNotice.startsWith("Could not save the read status.")) {
-      ownerNotice = "";
-      showOwnerInterface();
+    threadReadAtByUid.set(uid, latest.createdAt);
+    try {
+      await markThreadRead(uid, latest.createdAt);
+      if (ownerNotice.startsWith("Could not save the read status.")) {
+        ownerNotice = "";
+      }
+    } catch (error) {
+      ownerNotice = `Could not save the read status. ${error.message || ""}`;
     }
-  } catch (error) {
-    if (threadReadAtByUid.get(threadId) === latest.createdAt) {
-      if (previousReadAt) threadReadAtByUid.set(threadId, previousReadAt);
-      else threadReadAtByUid.delete(threadId);
-    }
-    ownerNotice = `Could not save the read status. ${error.message || ""}`;
-    showOwnerInterface();
   }
+  showOwnerInterface();
 }
 
 function readSavedName() {
@@ -358,13 +388,18 @@ function stopMessageWatch() {
   stopMessagesWatch = null;
   stopThreadReadsWatch?.();
   stopThreadReadsWatch = null;
+  stopVisitorAccountWatch?.();
+  stopVisitorAccountWatch = null;
   clearLocalTyping();
   window.clearTimeout(typingExpiryTimer);
   typingExpiryTimer = null;
   stopTypingWatch?.();
   stopTypingWatch = null;
+  typingWatchGeneration += 1;
   activeTypingThreadId = "";
+  activeTypingThreadIds = [];
   activeTypingSender = "";
+  localTypingActive = false;
   typingState = null;
 }
 
@@ -518,6 +553,18 @@ function showNamePrompt(errorText = "") {
       showMessagePrompt(assignment.name);
       startMessageListener(false, visitorUid);
     } catch (error) {
+      if (error.message?.includes("This account was removed from chat.")) {
+        saveVisitorName(name);
+        try {
+          await signOutOwner();
+        } catch (signOutError) {
+          status.className = "line error";
+          status.textContent = signOutError.message || "Could not create a fresh visitor session.";
+          input.disabled = false;
+          input.focus();
+        }
+        return;
+      }
       status.className = "line error";
       status.textContent = error.message || "Could not reserve that name.";
       input.disabled = false;
@@ -600,7 +647,7 @@ function showMessagePrompt(name) {
   addComposer();
 }
 
-function createChatMessage(message, threadName = "") {
+function createChatMessage(message, threadName = "", showSource = false) {
   const isOwner = message.sender === "owner";
   const article = document.createElement("article");
   article.className = `chat-message ${isOwner ? "from-owner" : "from-user"}`;
@@ -612,6 +659,10 @@ function createChatMessage(message, threadName = "") {
   content.append(document.createTextNode(`${senderName}: `), document.createTextNode(message.text || ""));
 
   article.append(content);
+  if (showSource && message.sender === "user" && message.threadId) {
+    const source = makeLine(`Source account: ${message.threadId}`, "message-source-id");
+    article.append(source);
+  }
   return article;
 }
 
@@ -661,17 +712,7 @@ function showOwnerPasswordPrompt() {
 }
 
 function getThreads() {
-  const threads = new Map();
-  for (const message of messages) {
-    if (!message.threadId) continue;
-    const thread = threads.get(message.threadId) || { id: message.threadId, name: message.name };
-    if (message.sender === "user") thread.name = message.name;
-    threads.set(message.threadId, thread);
-  }
-  for (const thread of threads.values()) {
-    thread.name = visitorNamesByUid.get(thread.id) || thread.name;
-  }
-  return [...threads.values()];
+  return groupMessagesByName(messages, visitorNamesByUid, visitorActiveByUid);
 }
 
 async function ensureVisitorNames(currentMessages) {
@@ -684,7 +725,7 @@ async function ensureVisitorNames(currentMessages) {
 
   const failures = [];
   await Promise.all([...names].map(async ([uid, name]) => {
-    if (visitorNamesByUid.has(uid)) return;
+    if (visitorNamesByUid.has(uid) && visitorActiveByUid.has(uid)) return;
     try {
       const existingReservation = visitorNameReservationPromises.get(uid);
       if (existingReservation) {
@@ -695,6 +736,7 @@ async function ensureVisitorNames(currentMessages) {
       const reservation = reserveVisitorName(name, uid)
         .then((assignment) => {
           visitorNamesByUid.set(uid, assignment.name);
+          visitorActiveByUid.set(uid, assignment.active);
         })
         .finally(() => {
           visitorNameReservationPromises.delete(uid);
@@ -737,12 +779,13 @@ function showOwnerInterface() {
   const userList = document.createElement("nav");
   userList.className = "user-list";
   userList.setAttribute("aria-label", "Message senders");
-  for (const thread of getThreads()) {
+  const threads = getThreads();
+  for (const thread of threads) {
     const entry = document.createElement("button");
     entry.className = `text-control user-entry${selectedThreadId === thread.id ? " selected" : ""}`;
     entry.type = "button";
-    entry.title = `Account ${thread.id}`;
-    entry.setAttribute("aria-label", `${thread.name}, account ${thread.id}`);
+    entry.title = `${thread.accounts.size} account${thread.accounts.size === 1 ? "" : "s"}`;
+    entry.setAttribute("aria-label", `${thread.name}, ${entry.title}`);
     const name = document.createElement("span");
     name.className = "user-entry-name";
     name.textContent = thread.name;
@@ -785,8 +828,8 @@ function showOwnerInterface() {
   main.className = "owner-main";
   main.setAttribute("aria-label", "Selected messages");
   if (!sidebarOpen) main.append(createToggle());
-  const thread = getThreads().find((item) => item.id === selectedThreadId);
-  const currentMessages = messages.filter((message) => message.threadId === selectedThreadId);
+  const thread = threads.find((item) => item.id === selectedThreadId);
+  const currentMessages = thread?.messages || [];
   const typing = makeTypingIndicator();
   ownerTypingLabel = typing.label;
   ownerTypingDots = typing.dots;
@@ -794,34 +837,45 @@ function showOwnerInterface() {
   visitorTypingDots = null;
   typingOtherName = thread?.name || "Visitor";
   main.append(typing.indicator);
-  watchTypingForThread(thread?.id || "", "owner", thread?.name || "Visitor");
+  watchTypingForThread(
+    thread?.id || "",
+    "owner",
+    thread?.name || "Visitor",
+    thread ? [...thread.activeAccounts] : []
+  );
   refreshTypingIndicator();
   if (thread) {
     main.append(makeLine(thread.name, "conversation-title"));
-    main.append(makeLine(`Account ID: ${thread.id}`, "account-id"));
+    main.append(makeLine(
+      `Source account IDs: ${[...thread.accounts].join(", ")}`,
+      "account-id"
+    ));
     const removeAccount = document.createElement("button");
     removeAccount.className = "text-control remove-account";
     removeAccount.type = "button";
-    removeAccount.textContent = "Remove account";
-    removeAccount.disabled = deletingThreadId === thread.id;
+    removeAccount.textContent = "Remove active accounts";
+    removeAccount.disabled = deletingThreadId === thread.id || !thread.activeAccounts.size;
     removeAccount.addEventListener("click", async () => {
-      if (deletingThreadId === thread.id) return;
+      if (deletingThreadId === thread.id || !thread.activeAccounts.size) return;
       if (!window.confirm(
-        `Remove ${thread.name} from chat and permanently delete their message history? ` +
-        "Their name will remain reserved. This does not delete their Firebase sign-in account."
+        `Remove all ${thread.activeAccounts.size} active account(s) named ${thread.name} from chat? ` +
+        "Their message history will be archived for the owner, and the name can be reused. " +
+        "This does not delete their Firebase sign-in accounts."
       )) {
         return;
       }
       deletingThreadId = thread.id;
       removeAccount.disabled = true;
       try {
-        const count = await removeVisitorAccount(thread.id);
+        const accountIds = [...thread.activeAccounts];
+        const count = await removeVisitorAccounts(accountIds);
         if (lastAuthUid !== ownerUid) return;
-        messages = messages.filter((message) => message.threadId !== thread.id);
-        threadReadAtByUid.delete(thread.id);
-        selectedThreadId = getThreads()[0]?.id || "";
+        for (const uid of accountIds) visitorActiveByUid.set(uid, false);
+        selectedThreadId = getThreads().find((item) => item.id === thread.id)?.id
+          || getThreads()[0]?.id
+          || "";
         replyError = "";
-        ownerNotice = `Removed ${thread.name} from chat and deleted ${count} messages. Their name remains reserved.`;
+        ownerNotice = `Removed ${count} account(s). Their messages are archived and ${thread.name} is available again.`;
         deletingThreadId = "";
         showOwnerInterface();
       } catch (error) {
@@ -836,9 +890,21 @@ function showOwnerInterface() {
     const transcript = document.createElement("div");
     transcript.className = "owner-transcript";
     for (const message of currentMessages) {
-      transcript.append(createChatMessage(message, thread.name));
+      transcript.append(createChatMessage(message, thread.name, true));
     }
     main.append(transcript);
+
+    if (!thread.activeAccounts.size) {
+      main.append(makeLine("No active accounts in this archive. The name is available to new accounts.", "status"));
+      if (!isFirebaseConfigured()) {
+        main.append(makeLine("Firebase is not configured. Owner messages are unavailable.", "error"));
+      } else if (messageError) {
+        main.append(makeLine(messageError, "error"));
+      }
+      if (ownerNotice) main.append(makeLine(ownerNotice, "status"));
+      app.append(sidebar, main);
+      return;
+    }
 
     const reply = document.createElement("div");
     reply.className = "owner-reply-composer";
@@ -861,7 +927,7 @@ function showOwnerInterface() {
       input.disabled = true;
       updateLocalTyping(thread.id, "owner", false);
       try {
-        await sendReply(text, thread.id);
+        await sendReply(text, [...thread.activeAccounts]);
         replyError = "";
         showOwnerInterface();
       } catch (error) {
@@ -941,6 +1007,27 @@ function startMessageListener(isOwner, threadId) {
       }
     );
   } else {
+    stopVisitorAccountWatch = watchVisitorAccount(
+      threadId,
+      (profile) => {
+        if (profile?.active === true) return;
+        stopVisitorAccountWatch?.();
+        stopVisitorAccountWatch = null;
+        void signOutOwner().catch((error) => {
+          if (lastAuthUid !== threadId || !visitorErrorLine) return;
+          visitorErrorLine.className = "line error";
+          visitorErrorLine.textContent = error.message || "Could not start a fresh visitor account.";
+        });
+      },
+      (error) => {
+        if (generation !== messageWatchGeneration) return;
+        console.warn("Could not monitor visitor account status.", error);
+        if (visitorErrorLine) {
+          visitorErrorLine.className = "line error";
+          visitorErrorLine.textContent = `Account status unavailable. ${error.message || ""}`;
+        }
+      }
+    );
     watchTypingForThread(threadId, "visitor");
   }
 }
@@ -981,7 +1068,16 @@ async function handleAuthChange(user) {
         showMessagePrompt(assignment.name);
         startMessageListener(false, user.uid);
       } catch (error) {
-        if (lastAuthUid === user.uid) showNamePrompt(error.message || "Could not reserve that name.");
+        if (lastAuthUid !== user.uid) return;
+        if (error.message?.includes("This account was removed from chat.")) {
+          try {
+            await signOutOwner();
+          } catch (signOutError) {
+            showNamePrompt(signOutError.message || "Could not create a fresh visitor session.");
+          }
+          return;
+        }
+        showNamePrompt(error.message || "Could not reserve that name.");
       }
     } else {
       const notice = sessionExpiredNotice;

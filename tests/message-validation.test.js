@@ -10,7 +10,9 @@ import {
 } from "../src/services/visitor-names.js";
 import {
   compareTimestamps,
-  isUnreadVisitorMessage
+  groupMessagesByName,
+  isUnreadVisitorMessage,
+  normalizeConversationName
 } from "../src/services/conversation-state.js";
 import {
   isAllowedFocusTarget,
@@ -75,6 +77,46 @@ test("marks only new visitor messages unread", () => {
   );
   assert.equal(isUnreadVisitorMessage({ sender: "user" }, readAt), true);
   assert.equal(compareTimestamps(timestamp(10, 300_000), readAt), 100_000);
+});
+
+test("groups same names case-insensitively and collapses whitespace", () => {
+  assert.equal(normalizeConversationName("  Alex\tSmith "), "alex smith");
+  const groups = groupMessagesByName([
+    { id: "1", threadId: "uid-a", sender: "user", name: "Alex Smith" },
+    { id: "2", threadId: "uid-b", sender: "user", name: "  ALEX   SMITH " },
+    { id: "3", threadId: "uid-b", sender: "owner", name: "Dark" }
+  ], new Map(), new Map([["uid-a", true], ["uid-b", false]]));
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, "Alex Smith");
+  assert.deepEqual([...groups[0].accounts], ["uid-a", "uid-b"]);
+  assert.deepEqual([...groups[0].activeAccounts], ["uid-a"]);
+  assert.deepEqual(groups[0].messages.map(({ id }) => id), ["1", "2", "3"]);
+});
+
+test("deduplicates owner broadcast messages in grouped history", () => {
+  const replyA = {
+    id: "reply-a",
+    threadId: "uid-a",
+    sender: "owner",
+    broadcastId: "broadcast-1"
+  };
+  const replyB = {
+    id: "reply-b",
+    threadId: "uid-b",
+    sender: "owner",
+    broadcastId: "broadcast-1"
+  };
+  const group = groupMessagesByName([
+    { id: "user-a", threadId: "uid-a", sender: "user", name: "Sam" },
+    { id: "user-b", threadId: "uid-b", sender: "user", name: "sam" },
+    replyA,
+    replyB
+  ], new Map(), new Map([["uid-a", true], ["uid-b", true]]))[0];
+
+  assert.deepEqual(group.messages.map(({ id }) => id), ["user-a", "user-b", "reply-a"]);
+  assert.equal(replyA.threadId, "uid-a");
+  assert.equal(replyB.threadId, "uid-b");
 });
 
 test("allows text entry only in enabled app inputs", () => {

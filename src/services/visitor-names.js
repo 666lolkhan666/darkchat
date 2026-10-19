@@ -4,6 +4,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   query,
   runTransaction,
   serverTimestamp,
@@ -16,7 +17,6 @@ import { MAX_NAME_LENGTH } from "./message-validation.js";
 
 const profilesCollection = () => collection(database, "visitorNames");
 const messagesCollection = () => collection(database, "messages");
-const threadReadsCollection = () => collection(database, "threadReads");
 const typingStatesCollection = () => collection(database, "typingStates");
 
 export function prepareVisitorName(name) {
@@ -56,18 +56,22 @@ export async function reserveVisitorName(requestedName, uid) {
   return runTransaction(database, async (transaction) => {
     const profile = await transaction.get(profileRef);
     if (profile.exists()) {
+      const profileData = profile.data();
       if (!profile.data().active) {
-        throw new Error("This account was removed from chat. Its name remains reserved; contact the owner for access.");
+        if (auth.currentUser.uid !== ownerUid) {
+          throw new Error("This account was removed from chat. Contact the owner for access.");
+        }
+        return { name: profileData.baseName || profileData.name || baseName, active: false };
       }
-      const savedName = profile.data().baseName || profile.data().name || baseName;
-      if (profile.data().name !== savedName || profile.data().nameKey !== uid) {
+      const savedName = profileData.baseName || profileData.name || baseName;
+      if (profileData.name !== savedName || profileData.nameKey !== uid) {
         transaction.update(profileRef, {
           name: savedName,
           number: 1,
           nameKey: uid
         });
       }
-      return { name: savedName };
+      return { name: savedName, active: true };
     }
 
     transaction.set(profileRef, {
@@ -79,60 +83,66 @@ export async function reserveVisitorName(requestedName, uid) {
       active: true,
       createdAt: serverTimestamp()
     });
-    return { name: baseName };
+    return { name: baseName, active: true };
   });
 }
 
-export async function removeVisitorAccount(uid) {
+export function watchVisitorAccount(uid, onAccount, onError) {
+  requireDatabase();
+  if (uid !== auth.currentUser.uid || uid === ownerUid) {
+    throw new Error("Only the signed-in visitor can watch this account.");
+  }
+  return onSnapshot(
+    doc(profilesCollection(), uid),
+    (snapshot) => onAccount(snapshot.exists() ? snapshot.data() : null),
+    onError
+  );
+}
+
+export async function removeVisitorAccounts(uids) {
   requireDatabase();
   if (auth.currentUser.uid !== ownerUid) {
-    throw new Error("Only the owner can remove a visitor account.");
+    throw new Error("Only the owner can remove visitor accounts.");
   }
-  if (!uid || uid === ownerUid) {
-    throw new Error("Select a valid visitor.");
+  const uniqueUids = [...new Set(Array.isArray(uids) ? uids : [])]
+    .filter((uid) => typeof uid === "string" && uid && uid.length <= 128 && uid !== ownerUid);
+  if (!uniqueUids.length) {
+    throw new Error("Select a valid visitor group.");
+  }
+  if (uniqueUids.length > 225) {
+    throw new Error("This name group has too many accounts to archive in one operation.");
   }
 
-  const profileRef = doc(profilesCollection(), uid);
-  const existingProfile = await getDoc(profileRef);
-  if (!existingProfile.exists()) {
-    const messages = await getDocs(
-      query(
-        messagesCollection(),
-        where("threadId", "==", uid),
-        limit(400)
-      )
+  for (const uid of uniqueUids) {
+    const profileRef = doc(profilesCollection(), uid);
+    const existingProfile = await getDoc(profileRef);
+    if (existingProfile.exists()) continue;
+
+    const page = await getDocs(
+      query(messagesCollection(), where("threadId", "==", uid), limit(400))
     );
-    const legacyName = messages.docs.find((message) => message.data().sender === "user")
+    const legacyName = page.docs.find((message) => message.data().sender === "user")
       ?.data().name;
     if (legacyName) await reserveVisitorName(legacyName, uid);
   }
 
-  const profileData = await runTransaction(database, async (transaction) => {
-    const profile = await transaction.get(profileRef);
-    if (!profile.exists()) return null;
-    const data = profile.data();
-    if (data.active) transaction.update(profileRef, { active: false });
-    return data;
-  });
-  let deleted = 0;
-  while (true) {
-    const page = await getDocs(
-      query(messagesCollection(), where("threadId", "==", uid), limit(400))
-    );
-    if (page.empty) break;
-
-    const batch = writeBatch(database);
-    for (const message of page.docs) batch.delete(message.ref);
-    await batch.commit();
-    deleted += page.size;
+  const profiles = await Promise.all(uniqueUids.map(async (uid) => ({
+    uid,
+    snapshot: await getDoc(doc(profilesCollection(), uid))
+  })));
+  const missing = profiles.find(({ snapshot }) => !snapshot.exists());
+  if (missing) {
+    throw new Error(`Could not find the visitor profile for account ${missing.uid}.`);
   }
 
-  if (profileData) {
-    const cleanup = writeBatch(database);
-    cleanup.delete(doc(threadReadsCollection(), uid));
-    cleanup.delete(doc(typingStatesCollection(), uid));
-    await cleanup.commit();
-  }
+  const activeProfiles = profiles.filter(({ snapshot }) => snapshot.data().active);
+  if (!activeProfiles.length) return 0;
 
-  return deleted;
+  const archiveBatch = writeBatch(database);
+  for (const { uid } of activeProfiles) {
+    archiveBatch.update(doc(profilesCollection(), uid), { active: false });
+    archiveBatch.delete(doc(typingStatesCollection(), uid));
+  }
+  await archiveBatch.commit();
+  return activeProfiles.length;
 }

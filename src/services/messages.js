@@ -7,7 +7,8 @@ import {
   query,
   runTransaction,
   serverTimestamp,
-  where
+  where,
+  writeBatch
 } from "firebase/firestore";
 import { auth, database } from "../firebase/client.js";
 import { isFirebaseConfigured, ownerUid } from "../firebase/config.js";
@@ -48,18 +49,31 @@ export async function sendMessage(name, text, threadId) {
   });
 }
 
-export async function sendReply(text, threadId) {
+export async function sendReply(text, threadIds) {
   const cleanText = cleanMessage("Dark", text).text;
-  if (typeof threadId !== "string" || !threadId || threadId.length > 128) {
+  const recipients = [...new Set(Array.isArray(threadIds) ? threadIds : [threadIds])]
+    .filter((threadId) => typeof threadId === "string" && threadId && threadId.length <= 128);
+  if (!recipients.length) {
     throw new Error("Select a valid conversation.");
   }
-  await addDoc(messagesCollection(), {
-    name: "Dark",
-    text: cleanText,
-    threadId,
-    sender: "owner",
-    createdAt: serverTimestamp()
-  });
+  if (recipients.length > 450) {
+    throw new Error("This name group has too many active accounts to reply to at once.");
+  }
+
+  const broadcastId = doc(messagesCollection()).id;
+  const batch = writeBatch(database);
+  for (const threadId of recipients) {
+    const messageRef = doc(messagesCollection());
+    batch.set(messageRef, {
+      name: "Dark",
+      text: cleanText,
+      threadId,
+      sender: "owner",
+      broadcastId,
+      createdAt: serverTimestamp()
+    });
+  }
+  await batch.commit();
 }
 
 export function watchMessages(onMessages, onError, threadId = null) {
@@ -117,8 +131,30 @@ export function watchTypingState(threadId, onState, onError) {
   );
 }
 
-export async function setTypingState(threadId, sender, isTyping) {
-  if (typeof threadId !== "string" || !threadId) {
+export function watchTypingStates(threadIds, onStates, onError) {
+  const uids = [...new Set(threadIds)].filter(Boolean);
+  if (!uids.length) {
+    onStates(new Map());
+    return () => {};
+  }
+
+  const states = new Map();
+  const stopWatching = uids.map((uid) => onSnapshot(
+    doc(typingStatesCollection(), uid),
+    (snapshot) => {
+      if (snapshot.exists()) states.set(uid, snapshot.data());
+      else states.delete(uid);
+      onStates(new Map(states));
+    },
+    onError
+  ));
+  return () => stopWatching.forEach((stop) => stop());
+}
+
+export async function setTypingState(threadIds, sender, isTyping) {
+  const uids = [...new Set(Array.isArray(threadIds) ? threadIds : [threadIds])]
+    .filter((uid) => typeof uid === "string" && uid && uid.length <= 128);
+  if (!uids.length) {
     throw new Error("A valid conversation is required to update typing status.");
   }
   if (sender !== "owner" && sender !== "visitor") {
@@ -130,23 +166,32 @@ export async function setTypingState(threadId, sender, isTyping) {
   if ((sender === "owner") !== (auth.currentUser.uid === ownerUid)) {
     throw new Error("The signed-in session cannot update this typing status.");
   }
+  if (sender === "owner" && uids.length > 450) {
+    throw new Error("This name group has too many active accounts to update typing status.");
+  }
 
-  const stateRef = doc(typingStatesCollection(), threadId);
-  await runTransaction(database, async (transaction) => {
-    const state = await transaction.get(stateRef);
-    const updatedAt = serverTimestamp();
-    if (state.exists()) {
+  if (sender === "visitor" && uids.some((uid) => uid !== auth.currentUser.uid)) {
+    throw new Error("Visitors can only update their own typing status.");
+  }
+
+  await Promise.all(uids.map(async (uid) => {
+    const stateRef = doc(typingStatesCollection(), uid);
+    await runTransaction(database, async (transaction) => {
+      const state = await transaction.get(stateRef);
+      const updatedAt = serverTimestamp();
+      if (state.exists()) {
+        transaction.set(stateRef, {
+          [sender === "owner" ? "ownerTyping" : "visitorTyping"]: isTyping,
+          updatedAt
+        }, { merge: true });
+        return;
+      }
+
       transaction.set(stateRef, {
-        [sender === "owner" ? "ownerTyping" : "visitorTyping"]: isTyping,
+        visitorTyping: sender === "visitor" && isTyping,
+        ownerTyping: sender === "owner" && isTyping,
         updatedAt
       }, { merge: true });
-      return;
-    }
-
-    transaction.set(stateRef, {
-      visitorTyping: sender === "visitor" && isTyping,
-      ownerTyping: sender === "owner" && isTyping,
-      updatedAt
     });
-  });
+  }));
 }

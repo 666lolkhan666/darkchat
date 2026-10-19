@@ -1,8 +1,10 @@
+@import "@fontsource/jetbrains-mono/400.css";
+
 :root {
   color-scheme: dark;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  background: #000;
-  color: #e7e7e7;
+  font-family: "JetBrains Mono", monospace;
+  background: #020806;
+  color: #c9f7dc;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -21,7 +23,7 @@ body,
   min-height: 100%;
   height: 100%;
   margin: 0;
-  background: #000;
+  background: #020806;
 }
 
 body {
@@ -58,7 +60,7 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #aaa;
+  color: #79b995;
 }
 
 .startup-output {
@@ -92,8 +94,8 @@ input {
   border-radius: 0;
   outline: 0;
   background: transparent;
-  caret-color: #e7e7e7;
-  color: #e7e7e7;
+  caret-color: #54ff9f;
+  color: #c9f7dc;
   appearance: none;
 }
 
@@ -116,7 +118,8 @@ input {
   display: inline-block;
   visibility: hidden;
   pointer-events: none;
-  color: #e7e7e7;
+  color: #54ff9f;
+  text-shadow: 0 0 8px #36e98266;
   line-height: inherit;
   animation: none;
 }
@@ -131,11 +134,10 @@ input {
 
 .chat-input:focus + .block-cursor {
   visibility: visible;
-  animation: block-cursor-blink 1s steps(2, start) infinite;
 }
 
 .status {
-  color: #999;
+  color: #79b995;
 }
 
 .visitor-transcript {
@@ -175,7 +177,7 @@ input {
 }
 
 .error {
-  color: #d65b5b;
+  color: #ff647c;
 }
 
 .owner-layout {
@@ -198,7 +200,7 @@ input {
   height: 100%;
   padding: max(18px, env(safe-area-inset-top)) 14px max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
   overflow: hidden;
-  border-right: 1px solid #333;
+  border-right: 1px solid #17412d;
   white-space: nowrap;
   transition: opacity 160ms ease, padding 180ms ease;
 }
@@ -217,7 +219,7 @@ input {
   padding: 0;
   border: 0;
   background: none;
-  color: #aaa;
+  color: #79b995;
   text-align: left;
   cursor: pointer;
 }
@@ -226,11 +228,11 @@ input {
 .text-control:focus-visible,
 .text-control.selected,
 .owner-toggle {
-  color: #eee;
+  color: #e0ffeb;
 }
 
 .text-control:focus-visible {
-  outline: 1px dotted #777;
+  outline: 1px dotted #54ff9f;
   outline-offset: 3px;
 }
 
@@ -271,8 +273,8 @@ input {
   width: 0.55em;
   height: 0.55em;
   border-radius: 50%;
-  background: #e7e7e7;
-  box-shadow: 0 0 7px #e7e7e7;
+  background: #54ff9f;
+  box-shadow: 0 0 8px #54ff9f99;
 }
 
 .typing-indicator {
@@ -281,7 +283,7 @@ input {
   gap: 0.55em;
   min-height: 1.8em;
   margin: 0 0 10px;
-  color: #888;
+  color: #65a981;
   font-size: 0.85em;
 }
 
@@ -338,13 +340,13 @@ input {
 
 .conversation-title {
   margin-bottom: 20px;
-  color: #aaa;
+  color: #9bd8b1;
 }
 
 .account-id {
   margin-top: -18px;
   margin-bottom: 16px;
-  color: #666;
+  color: #527f63;
   font-size: 0.8em;
 }
 
@@ -369,10 +371,9 @@ input {
   text-align: left;
 }
 
-@keyframes block-cursor-blink {
-  to {
-    opacity: 0.25;
-  }
+.message-source-id {
+  color: #527f63;
+  font-size: 0.75em;
 }
 
 @keyframes typing-pulse {

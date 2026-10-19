@@ -10,7 +10,9 @@ service cloud.firestore {
     function validMessage() {
       let data = request.resource.data;
       return data.keys().hasAll(['name', 'text', 'createdAt', 'threadId', 'sender'])
-        && data.keys().hasOnly(['name', 'text', 'createdAt', 'threadId', 'sender'])
+        && data.keys().hasOnly([
+          'name', 'text', 'createdAt', 'threadId', 'sender', 'broadcastId'
+        ])
         && data.name is string
         && data.name.size() > 0
         && data.name.size() <= 100
@@ -24,6 +26,7 @@ service cloud.firestore {
         && (
           (
             data.sender == 'user'
+            && !data.keys().hasAny(['broadcastId'])
             && request.auth != null
             && request.auth.uid != '5Uc5gT6JclWsAE6fLouHV8TRsVe2'
             && data.threadId == request.auth.uid
@@ -41,6 +44,9 @@ service cloud.firestore {
             data.sender == 'owner'
             && isOwner()
             && data.name == 'Dark'
+            && data.broadcastId is string
+            && data.broadcastId.size() > 0
+            && data.broadcastId.size() <= 128
             && data.threadId != '5Uc5gT6JclWsAE6fLouHV8TRsVe2'
             && exists(
               /databases/$(database)/documents/visitorNames/$(data.threadId)
